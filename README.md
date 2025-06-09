@@ -69,6 +69,8 @@ On first run, you'll be prompted for:
 
 You can choose to save these settings (in `~/.enchat.conf`) for automatic reconnection.
 
+**Note:** All participants must use the exact same room name and encryption passphrase to join the same chat and decrypt each other's messages.
+
 ### Command-line options
 
 ```bash

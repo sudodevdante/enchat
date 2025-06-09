@@ -120,6 +120,7 @@ def main():
     # Als niet gevonden, vraag alles op
     if not (room and nick and secret):
         print(Fore.MAGENTA + Style.BRIGHT + "== ENCRYPTED TERMINAL CHAT ==")
+        print(Fore.MAGENTA + Style.DIM + "Opmerking: deelnemers moeten dezelfde roomnaam en encryptiecode invoeren om elkaars berichten te kunnen lezen." + Style.RESET_ALL)
         room = input("Roomnaam (uniek, geheim): ").strip()
         nick = input("Jouw nickname: ").strip()
         secret = getpass.getpass("Encryptiecode (niet zichtbaar): ").strip()
