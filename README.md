@@ -21,12 +21,17 @@ Enchat is a simple encrypted terminal chat tool that uses the free `ntfy.sh` ser
 
 ### Automatic installer (recommended)
 
-Clone the repository and run the installer script:
+Clone the repository and run one of the installer scripts:
 
 ```bash
 git clone https://github.com/sudodevdante/enchat.git
 cd enchat
+
+# Standard installation (start Enchat with `enchat`)
 ./install-enchat.sh
+
+# Or install with wipe integration (adds `enchat wipe` command)
+./install-enchat-wipe.sh
 ```
 
 Follow the prompts to choose an install directory, set up a virtual environment, install dependencies, and (optionally) create a global `enchat` command.
@@ -51,11 +56,12 @@ chmod +x enchat.py
 
 ## Usage
 
-Start the chat with one of the following commands:
+Start the chat or wipe saved traces with the following commands:
 
 ```bash
 # If installed via the installer script:
-enchat
+enchat           # start Enchat
+enchat wipe      # wipe all Enchat traces
 
 # If using a virtual environment:
 source venv/bin/activate
