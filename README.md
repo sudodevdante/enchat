@@ -51,13 +51,14 @@ chmod +x enchat.py
 
 ## Usage
 
-Start the chat with:
+Start the chat with one of the following commands:
 
 ```bash
-# If using venv:
-source venv/bin/activate
+# If installed via the installer script:
+enchat
 
-# Launch Enchat
+# If using a virtual environment:
+source venv/bin/activate
 python enchat.py
 ```
 
