@@ -79,11 +79,23 @@ You can choose to save these settings (in `~/.enchat.conf`) for automatic reconn
 
 ### Command-line options
 
+Commands can be run via the `enchat` launcher or directly with Python:
+
 ```bash
+# Show help for available options
+enchat --help
+
+# Delete saved settings and prompt for reconfiguration
+enchat --reset
+# or:
 python enchat.py --reset
+
+# Securely remove all Enchat traces (configuration, shell history entries, and terminal scrollback)
+enchat wipe
 ```
 
-- `--reset`: delete saved settings (`~/.enchat.conf`) and start fresh.
+- `--reset`: delete saved settings (`~/.enchat.conf`) and prompt for new configuration.
+- `wipe`: securely remove all Enchat traces (config file, shell history entries, and terminal scrollback).
 
 ### In-chat commands
 
@@ -93,3 +105,21 @@ python enchat.py --reset
 ## How it works
 
 Enchat pushes and listens for messages via `https://ntfy.sh/<room>`. Messages are encrypted client-side with symmetric encryption (Fernet). Only participants with the same room name and passphrase can decrypt and read the messages.
+
+## Security & privacy
+
+### Configuration & saved settings
+
+Enchat stores your room name, nickname, and encryption passphrase in plain text in `~/.enchat.conf` for auto-reconnection. To protect your passphrase, restrict access to this file:
+
+```bash
+chmod 600 ~/.enchat.conf
+```
+
+If you prefer not to save your passphrase, choose "no" when prompted and you'll be asked each time.
+
+You can remove saved settings with `enchat --reset`, or perform a full wipe of all traces (including shell history) with `enchat wipe`.
+
+### End-to-end encryption
+
+Enchat uses the Python `cryptography` library's Fernet implementation for client-side encryption and authentication. A symmetric key is derived from your passphrase using SHA-256, and messages are encrypted with AES in CBC mode and authenticated with HMAC-SHA256. The ntfy.sh service only sees encrypted payloads; your passphrase is never transmitted or stored on any server.
