@@ -34,7 +34,7 @@ def notify(msg):
         os.system(f'''osascript -e 'display notification "{msg}" with title "Enchat"' ''')
 
 def print_system(msg):
-    print(Fore.YELLOW + Style.BRIGHT + f"[SYSTEEM] {msg}")
+    print(Fore.YELLOW + Style.BRIGHT + f"[SYSTEM] {msg}")
 
 def print_user(user, msg, you=False):
     color = Fore.CYAN if not you else Fore.GREEN
@@ -71,11 +71,11 @@ def listen(room, nick, fernet, stop_event):
                         what = line.split('] ')[-1]
                         if who != nick:
                             if what == "joined":
-                                print_system(f"{Fore.CYAN}{who}{Style.RESET_ALL} is de chat binnengekomen.")
-                                notify(f"{who} is de chat binnengekomen.")
+                                print_system(f"{Fore.CYAN}{who}{Style.RESET_ALL} joined the chat.")
+                                notify(f"{who} joined the chat.")
                             elif what == "left":
-                                print_system(f"{Fore.RED}{who}{Style.RESET_ALL} heeft de chat verlaten.")
-                                notify(f"{who} heeft de chat verlaten.")
+                                print_system(f"{Fore.RED}{who}{Style.RESET_ALL} left the chat.")
+                                notify(f"{who} left the chat.")
                         continue
                     if not line.startswith("[") or "] " not in line:
                         continue
@@ -89,10 +89,10 @@ def listen(room, nick, fernet, stop_event):
                         notify(f"{sender}: {dec}")
                     else:
                         if data.startswith("U2FsdGVk") or data.startswith("gAAAA"):
-                            print_user(sender, "[Onleesbaar of verkeerde code]")
+                            print_user(sender, "[Unreadable or wrong code]")
         except Exception as e:
             if not stop_event.is_set():
-                print(Fore.YELLOW + f"\nVerbinding verbroken ({e}). Verbinden opnieuw..." + Style.RESET_ALL)
+                print(Fore.YELLOW + f"\nConnection lost ({e}). Reconnecting..." + Style.RESET_ALL)
                 time.sleep(2)
 
 def send_msg(room, msg, nick, fernet):
@@ -106,42 +106,44 @@ def send_system(room, nick, msg):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--reset", action="store_true", help="Verwijder opgeslagen instellingen en stel opnieuw in.")
+    parser.add_argument("--reset", action="store_true", help="Remove saved settings and reconfigure.")
     args = parser.parse_args()
 
     if args.reset:
         if os.path.exists(CONF_FILE):
             os.remove(CONF_FILE)
-        print(Fore.YELLOW + "Opgeslagen instellingen verwijderd! Start opnieuw..." + Style.RESET_ALL)
+        print(Fore.YELLOW + "Saved settings removed! Please restart and reconfigure..." + Style.RESET_ALL)
 
-    # Probeer te laden uit conf-file
+    # Try to load from conf file
     room, nick, secret = load_conf()
 
-    # Als niet gevonden, vraag alles op
+    # If not found, prompt for everything
     if not (room and nick and secret):
         print(Fore.MAGENTA + Style.BRIGHT + "== ENCRYPTED TERMINAL CHAT ==")
-        print(Fore.MAGENTA + Style.DIM + "Opmerking: deelnemers moeten dezelfde roomnaam en encryptiecode invoeren om elkaars berichten te kunnen lezen." + Style.RESET_ALL)
-        room = input("Roomnaam (uniek, geheim): ").strip()
-        nick = input("Jouw nickname: ").strip()
-        secret = getpass.getpass("Encryptiecode (niet zichtbaar): ").strip()
-        print(Fore.YELLOW + "Wil je deze instellingen opslaan voor automatisch reconnecten? [Y/n]: " + Style.RESET_ALL, end='')
+        print(Fore.MAGENTA + Style.DIM +
+              "Note: All participants must use the same room name and encryption code to see each other's messages." +
+              Style.RESET_ALL)
+        room = input("Room name (unique, secret): ").strip()
+        nick = input("Your nickname: ").strip()
+        secret = getpass.getpass("Encryption code (hidden): ").strip()
+        print(Fore.YELLOW + "Save these settings for auto-reconnect? [Y/n]: " + Style.RESET_ALL, end='')
         ans = input().strip() or "Y"
         if ans.lower().startswith('y'):
             save_conf(room, nick, secret)
-            print(Fore.GREEN + "Instellingen opgeslagen." + Style.RESET_ALL)
+            print(Fore.GREEN + "Settings saved." + Style.RESET_ALL)
     else:
-        print(Fore.GREEN + f"Welkom terug, {nick}! Je bent automatisch verbonden met '{room}'." + Style.RESET_ALL)
+        print(Fore.GREEN + f"Welcome back, {nick}! You are automatically connected to '{room}'." + Style.RESET_ALL)
 
     key = gen_key(secret)
     fernet = Fernet(key)
-    print_system(f"Je joined room {room}. Type /exit om te stoppen, /clear om scherm te wissen.")
+    print_system(f"You joined room {room}. Type /exit to quit, /clear to clear the screen.")
     send_system(room, nick, "joined")
     stop_event = threading.Event()
     t = threading.Thread(target=listen, args=(room, nick, fernet, stop_event), daemon=True)
     t.start()
     def sigint_handler(sig, frame):
         send_system(room, nick, "left")
-        print_system("Je verlaat de chat.")
+        print_system("You left the chat.")
         stop_event.set()
         sys.exit(0)
     signal.signal(signal.SIGINT, sigint_handler)
@@ -150,7 +152,7 @@ def main():
             msg = input(Fore.GREEN + "> " + Style.RESET_ALL)
             if msg == "/exit":
                 send_system(room, nick, "left")
-                print_system("Je verlaat de chat.")
+                print_system("You left the chat.")
                 stop_event.set()
                 sys.exit(0)
             elif msg == "/clear":
@@ -159,10 +161,9 @@ def main():
                 send_msg(room, msg, nick, fernet)
     except (KeyboardInterrupt, EOFError):
         send_system(room, nick, "left")
-        print_system("Je verlaat de chat.")
+        print_system("You left the chat.")
         stop_event.set()
         sys.exit(0)
 
 if __name__ == "__main__":
     main()
-
