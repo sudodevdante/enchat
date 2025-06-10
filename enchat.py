@@ -390,7 +390,8 @@ def main():
             if len(msg) > MAX_MESSAGE_LENGTH:
                 ui.print_system_message(f"Message too long ({len(msg)}/{MAX_MESSAGE_LENGTH} characters)", "error")
                 continue
-            # Print the message immediately when sending
+            # Clear the entire input line using ANSI escape codes
+            print("\033[1A\033[2K", end="")  # Move up one line and clear it
             ui.print_user_message(nick, msg, is_own=True)
             send_msg(room, msg, nick, fernet, ntfy_server)
 
