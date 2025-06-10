@@ -72,6 +72,7 @@ On first run, you'll be prompted for:
 1. **Room name** (unique, secret identifier)
 2. **Nickname**
 3. **Encryption passphrase**
+4. **ntfy server URL** (optional, defaults to `ntfy.sh`)
 
 You can choose to save these settings (in `~/.enchat.conf`) for automatic reconnection.
 
@@ -90,11 +91,17 @@ enchat --reset
 # or:
 python enchat.py --reset
 
+# Use a custom ntfy server instead of ntfy.sh
+enchat --server https://your-ntfy.example.com
+# or:
+python enchat.py --server https://your-ntfy.example.com
+
 # Securely remove all Enchat traces (configuration, shell history entries, and terminal scrollback)
 enchat wipe
 ```
 
 - `--reset`: delete saved settings (`~/.enchat.conf`) and prompt for new configuration.
+- `--server`: use a custom ntfy server instead of the default `ntfy.sh`.
 - `wipe`: securely remove all Enchat traces (config file, shell history entries, and terminal scrollback).
 
 ### In-chat commands
@@ -104,7 +111,17 @@ enchat wipe
 
 ## How it works
 
-Enchat pushes and listens for messages via `https://ntfy.sh/<room>`. Messages are encrypted client-side with symmetric encryption (Fernet). Only participants with the same room name and passphrase can decrypt and read the messages.
+Enchat pushes and listens for messages via `https://ntfy.sh/<room>` (or your custom ntfy server). Messages are encrypted client-side with symmetric encryption (Fernet). Only participants with the same room name and passphrase can decrypt and read the messages.
+
+### Self-hosted ntfy
+
+You can use your own ntfy server instead of the public `ntfy.sh`. This gives you:
+- Full control over your messaging infrastructure
+- Better privacy (no third-party involvement)
+- Customizable features and limits
+- Reduced dependency on external services
+
+To set up your own ntfy server, visit [ntfy.sh documentation](https://docs.ntfy.sh/install/) for installation instructions. Then use the `--server` option or specify your server URL during initial setup.
 
 ## Security & privacy
 
