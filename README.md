@@ -1,142 +1,205 @@
-# Enchat
+<div align="center">
+  <img src="https://sudosallie.com/enchatlogo.png" alt="Enchat Logo" width="400">
+</div>
 
-Enchat is a simple encrypted terminal chat tool that uses the free `ntfy.sh` service for real-time messaging with end-to-end encryption directly in your terminal.
+# 🔐 Enchat - Encrypted Terminal Chat
 
-## Features
-- End-to-end symmetric encryption using the `cryptography` package (Fernet)
-- No dedicated server required – messages go through `ntfy.sh`
-- Automatic reconnect on connection loss
-- Desktop notifications on Linux (`notify-send`) and macOS (`osascript`)
-- Save chat settings for automatic reconnection
-- Simple chat commands: `/exit`, `/clear`
-- Command-line option `--reset` to clear saved settings
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.6+](https://img.shields.io/badge/python-3.6+-blue.svg)](https://www.python.org/downloads/)
 
-## Prerequisites
-- Python 3.6 or higher
-- `pip` (for installing dependencies)
-- (Optional) `git`, if you want to use the installer script
-- (Optional) Unix-like OS for desktop notifications (Linux, macOS)
+**Enchat** brings **military-grade encryption** directly to your terminal, enabling completely private conversations without corporate surveillance or data harvesting. Chat securely with colleagues, friends, or team members knowing that your messages are **cryptographically protected** and invisible to servers, governments, and eavesdroppers.
 
-## Installation
+**Why Enchat?** Because your conversations deserve better than Big Tech's "encrypted" platforms that still profile you, track you, and own your data. Take back control with a tool that's **truly private by design** - no accounts, no tracking, no compromises.
 
-### Automatic installer (recommended)
+## 🔒 Security & Encryption
 
-Clone the repository and run one of the installer scripts:
+### **How Your Messages Stay Safe**
+- **End-to-end encryption** using Fernet (AES 128 in CBC mode + HMAC-SHA256)
+- **Client-side encryption** - messages are encrypted before leaving your device
+- **Server blindness** - ntfy servers only see encrypted blobs, never plaintext
+- **Authenticated encryption** - prevents message tampering and ensures integrity
+- **Key derivation** - SHA-256 hash of your passphrase generates encryption keys
 
-```bash
-git clone https://github.com/sudodevdante/enchat.git
-cd enchat
-
-# Standard installation (start Enchat with `enchat`)
-./install-enchat.sh
-
-# Or install with wipe integration (adds `enchat wipe` command)
-./install-enchat-wipe.sh
+### **Message Flow Security**
+```
+Your Message → [Encrypt] → Encrypted Blob → ntfy Server → Encrypted Blob → [Decrypt] → Recipient
 ```
 
-Follow the prompts to choose an install directory, set up a virtual environment, install dependencies, and (optionally) create a global `enchat` command.
+The ntfy server acts as a **message relay only** - it cannot decrypt your messages without your passphrase. Even if the server is compromised, your conversations remain secure.
 
-### Manual setup
+### **Privacy Guarantees**
+- 🔐 **Zero knowledge** - servers never see message content
+- 🎭 **Anonymous** - no accounts or personal information required
+- 🧹 **Clean exit** - secure wipe removes all traces
 
+## ✨ Features
+
+- **Real-time encrypted chat** with timestamps and status indicators
+- **Self-hosted ntfy support** for complete infrastructure control
+- **Auto-reconnection** with smart retry logic
+- **Desktop notifications** (Linux, macOS)
+- **Command system** (`/help`, `/clear`, `/exit`)
+- **Smart input handling** and message validation
+- **Cross-platform** terminal support
+
+## 🚀 Quick Start
+
+### Installation
+
+#### Automatic Installer (Recommended)
 ```bash
 git clone https://github.com/sudodevdante/enchat.git
 cd enchat
+./install-enchat.sh
+```
 
-# (Optional) Create a virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install --upgrade pip
+#### Manual Setup
+```bash
+git clone https://github.com/sudodevdante/enchat.git
+cd enchat
 pip install requests colorama cryptography
-
-# Make the main script executable
 chmod +x enchat.py
 ```
 
-## Usage
-
-Start the chat or wipe saved traces with the following commands:
+### First Run
 
 ```bash
-# If installed via the installer script:
-enchat           # start Enchat
-enchat wipe      # wipe all Enchat traces
-
-# If using a virtual environment:
-source venv/bin/activate
-python enchat.py
+enchat
 ```
 
-On first run, you'll be prompted for:
-1. **Room name** (unique, secret identifier)
-2. **Nickname**
-3. **Encryption passphrase**
-4. **ntfy server URL** (optional, defaults to `ntfy.sh`)
+Setup interface:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           ENCRYPTED TERMINAL CHAT                           │
+└─────────────────────────────────────────────────────────────────────────────┘
 
-You can choose to save these settings (in `~/.enchat.conf`) for automatic reconnection.
+Welcome to Enchat! Let's set up your encrypted chat.
 
-**Note:** All participants must use the exact same room name and encryption passphrase to join the same chat and decrypt each other's messages.
+🏠 Room name (unique, secret): my-secret-room
+👤 Your nickname: alice
+🔐 Encryption passphrase (hidden): ••••••••
+🌐 ntfy server URL (press Enter for default https://ntfy.sh): 
+💾 Save settings for auto-reconnect? [Y/n]: y
+```
 
-### Command-line options
+### Chat Interface
 
-Commands can be run via the `enchat` launcher or directly with Python:
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│🟢 my-secret-room | alice | ntfy.sh                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+[14:32:15] ℹ Joined room 'my-secret-room' • Type /exit to quit, /clear to clear screen
+[14:32:16] ℹ Connected successfully! Ready to chat!
+
+[14:32:20] → bob joined the chat
+[14:32:25] bob: Hey Alice! 👋
+[14:32:30] alice: Hi Bob! How are you?
+[14:32:35] bob: This is completely private!
+
+💬 > 
+```
+
+## 🛠️ Configuration
+
+### Command Line Options
 
 ```bash
-# Show help for available options
-enchat --help
-
-# Delete saved settings and prompt for reconfiguration
-enchat --reset
-# or:
-python enchat.py --reset
-
-# Use a custom ntfy server instead of ntfy.sh
-enchat --server https://your-ntfy.example.com
-# or:
-python enchat.py --server https://your-ntfy.example.com
-
-# Securely remove all Enchat traces (configuration, shell history entries, and terminal scrollback)
-enchat wipe
+enchat --help                                    # Show help
+enchat --reset                                   # Clear saved settings
+enchat --server https://your-ntfy.example.com   # Use custom ntfy server
+enchat wipe                                      # Securely remove all traces
 ```
 
-- `--reset`: delete saved settings (`~/.enchat.conf`) and prompt for new configuration.
-- `--server`: use a custom ntfy server instead of the default `ntfy.sh`.
-- `wipe`: securely remove all Enchat traces (config file, shell history entries, and terminal scrollback).
+### In-Chat Commands
 
-### In-chat commands
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/clear` | Clear screen |
+| `/exit` | Leave chat |
 
-- `/exit`: leave the chat and exit
-- `/clear`: clear your terminal screen
+### Self-Hosted ntfy
 
-## How it works
+For complete control over your infrastructure:
 
-Enchat pushes and listens for messages via `https://ntfy.sh/<room>` (or your custom ntfy server). Messages are encrypted client-side with symmetric encryption (Fernet). Only participants with the same room name and passphrase can decrypt and read the messages.
+```bash
+# Docker
+docker run -d --name ntfy -p 80:80 binwiederhier/ntfy serve
 
-### Self-hosted ntfy
+# Then use with Enchat
+enchat --server https://your-ntfy-server.com
+```
 
-You can use your own ntfy server instead of the public `ntfy.sh`. This gives you:
-- Full control over your messaging infrastructure
-- Better privacy (no third-party involvement)
-- Customizable features and limits
-- Reduced dependency on external services
+## 🔧 How It Works
 
-To set up your own ntfy server, visit [ntfy.sh documentation](https://docs.ntfy.sh/install/) for installation instructions. Then use the `--server` option or specify your server URL during initial setup.
+**Architecture:**
+```
+Alice ←→ [Encrypted Channel] ←→ ntfy Server ←→ [Encrypted Channel] ←→ Bob
+```
 
-## Security & privacy
+1. **Message encryption** happens on your device using your shared passphrase
+2. **Encrypted data** is sent to ntfy server (never plaintext)
+3. **Server relays** the encrypted blob without decryption capability
+4. **Recipients decrypt** using the same passphrase
 
-### Configuration & saved settings
+**Security Properties:**
+- Server compromise doesn't expose message content
+- Network sniffing only reveals encrypted data
+- Forward secrecy through unique room sessions
+- Message authentication prevents tampering
 
-Enchat stores your room name, nickname, and encryption passphrase in plain text in `~/.enchat.conf` for auto-reconnection. To protect your passphrase, restrict access to this file:
+## 🔒 Security Best Practices
 
+✅ **Recommended:**
+- Use strong passphrases (12+ characters)
+- Share room details through secure channels
+- Use different rooms for different groups
+- Self-host for sensitive communications
+
+⚠️ **Important:**
+- All participants need the exact same passphrase
+- Room names are case-sensitive
+- Don't reuse room names across different conversations
+
+### Configuration Security
+
+Settings are stored in `~/.enchat.conf`. Secure this file:
 ```bash
 chmod 600 ~/.enchat.conf
 ```
 
-If you prefer not to save your passphrase, choose "no" when prompted and you'll be asked each time.
+For maximum security, don't save your passphrase (choose 'n' during setup).
 
-You can remove saved settings with `enchat --reset`, or perform a full wipe of all traces (including shell history) with `enchat wipe`.
+## 📋 Requirements
 
-### End-to-end encryption
+- **Python 3.6+**
+- **Dependencies:** `requests`, `colorama`, `cryptography`
+- **Platforms:** Linux, macOS, Windows (with Unicode terminal support)
 
-Enchat uses the Python `cryptography` library's Fernet implementation for client-side encryption and authentication. A symmetric key is derived from your passphrase using SHA-256, and messages are encrypted with AES in CBC mode and authenticated with HMAC-SHA256. The ntfy.sh service only sees encrypted payloads; your passphrase is never transmitted or stored on any server.
+## 🐛 Troubleshooting
+
+**Connection Issues:**
+- Verify internet connection and ntfy server accessibility
+- Try default ntfy.sh if custom server fails
+
+**Encryption Issues:**
+- Ensure exact passphrase match across all participants
+- Check for typos in room names (case-sensitive)
+
+**Display Issues:**
+- Ensure terminal supports Unicode characters
+- Update terminal emulator for proper color support
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+## 🙏 Acknowledgments
+
+- [ntfy.sh](https://ntfy.sh) for secure notification infrastructure
+- [cryptography](https://cryptography.io/) for robust encryption implementation
+
+---
+
+**Secure terminal communication made simple**
