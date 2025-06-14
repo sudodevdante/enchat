@@ -1402,37 +1402,60 @@ class ChatUI:
         if not self.redraw and self.cached_header:
             return self.cached_header
             
+        try:
+            import shutil
+            terminal_width = shutil.get_terminal_size().columns
+        except:
+            terminal_width = 80  # Fallback width
+            
         room_status = ("PUBLIC", "bold red") if session_key.is_public_room(self.room) else ("PRIVATE", "bold green")
         
-        # For mobile devices, use a more compact layout
-        if self.is_mobile:
-            # First line: ENCHAT + room status
-            line1 = Text.assemble(
-                ("ENCHAT", "bold cyan"),
-                (" ", "white"), room_status)
+        # For mobile/narrow devices, use a more compact layout
+        if terminal_width < 80:
+            # Ensure room name and nick don't overflow
+            max_name_len = max(10, min(15, (terminal_width - 20) // 2))
+            room_display = self.room[:max_name_len] + ("..." if len(self.room) > max_name_len else "")
+            nick_display = self.nick[:max_name_len] + ("..." if len(self.nick) > max_name_len else "")
             
-            # Second line: room name + nickname
-            line2 = Text.assemble(
-                (f"{self.room}", "white"),
-                (" | ", "dim"),
-                (f"{self.nick}", "magenta"))
-            
-            # Combine lines
+            # Build compact header
             content = Text()
-            content.append(line1)
+            # First line: Status only
+            content.append(Text.assemble(
+                ("ENCHAT", "bold cyan"),
+                (" ", "white"),
+                room_status))
             content.append("\n")
-            content.append(line2)
+            # Second line: Room + Nick
+            content.append(Text.assemble(
+                (room_display, "white"),
+                (" • ", "dim"),
+                (nick_display, "magenta")))
             
-            self.cached_header = Panel(content, style="blue")
+            self.cached_header = Panel(
+                Align.center(content),
+                style="blue",
+                padding=(0, 1)
+            )
         else:
-            # Desktop layout - original single line
-            self.cached_header = Panel(Text.assemble(
-                (" ENCHAT ", "bold cyan"),
-                (" CONNECTED ", "bold green"),
-                (" ", "white"), room_status, (" ", "white"),
-                (f" {self.room} ", "white"),
-                (f" {self.nick} ", "magenta"),
-                (" | " + self.server.replace("https://", ""), "dim")), style="blue")
+            # Desktop layout - single line with full info
+            server_display = self.server.replace("https://", "")
+            if len(server_display) > 20:  # Truncate long server URLs
+                server_display = server_display[:17] + "..."
+                
+            self.cached_header = Panel(
+                Text.assemble(
+                    ("ENCHAT", "bold cyan"),
+                    (" ", "white"),
+                    room_status,
+                    (" ", "white"),
+                    (f"{self.room}", "white"),
+                    (" • ", "dim"),
+                    (f"{self.nick}", "magenta"),
+                    (" | ", "dim"),
+                    (server_display, "dim")),
+                style="blue",
+                padding=(0, 1)
+            )
             
         return self.cached_header
 
