@@ -1374,6 +1374,12 @@ class ChatUI:
         )
         self.redraw=True; self.last_len=len(buf); self.last_input=""
         self.last_terminal_size=(0,0)  # Track terminal size changes
+        self.last_size_check = 0  # For throttling size checks
+        self.last_update_time = time.time()  # For throttling updates
+        self.is_mobile = self._detect_mobile()
+        self.cached_header = None  # Cache for header panel
+        self.cached_input = None   # Cache for input panel
+        self.cached_input_text = ""  # Track input text for cache invalidation
         
         # Show warning for public rooms
         if session_key.is_public_room(room):
@@ -1382,16 +1388,30 @@ class ChatUI:
                 self.buf.append(("System", info["warning"], False))
                 self.buf.append(("System", "Type /security for more information", False))
 
+    def _detect_mobile(self):
+        """Detect if running in a mobile terminal based on screen width"""
+        try:
+            import shutil
+            return shutil.get_terminal_size().columns < 80
+        except:
+            return False
+
     # ─ render helpers ─
     def _head(self):
+        # Use cached header if available
+        if not self.redraw and self.cached_header:
+            return self.cached_header
+            
         room_status = ("PUBLIC", "bold red") if session_key.is_public_room(self.room) else ("PRIVATE", "bold green")
-        return Panel(Text.assemble(
+        self.cached_header = Panel(Text.assemble(
             (" ENCHAT ", "bold cyan"),
             (" CONNECTED ", "bold green"),
             (" ", "white"), room_status, (" ", "white"),
             (f" {self.room} ", "white"),
             (f" {self.nick} ", "magenta"),
             (" | " + self.server.replace("https://", ""), "dim")), style="blue")
+        return self.cached_header
+
     def _body(self):
         # Calculate available space for messages (terminal height - header - input - panel borders)
         try:
@@ -1423,13 +1443,21 @@ class ChatUI:
                 t.append(f"{lab}: ",style=st)
                 t.append(f"{m}\n")
         return Panel(t,title=f"Messages ({len(self.buf)}) - showing newest",padding=(0,1))
+
     def _inp(self):
+        # Use cached input if text hasn't changed
         entered="".join(current_input)
+        if not self.redraw and entered == self.cached_input_text and self.cached_input:
+            return self.cached_input
+            
         txt=Text()
         txt.append(f"{self.nick}: ", style="bold green")
         txt.append(entered or "…", style="white")
         txt.append(f"  {len(entered)}/{MAX_MSG_LEN}", style="dim")
-        return Panel(Align.left(txt),title="Type message",padding=(0,1))
+        
+        self.cached_input = Panel(Align.left(txt),title="Type message",padding=(0,1))
+        self.cached_input_text = entered
+        return self.cached_input
 
     # ─ main loop ─
     def run(self):
@@ -1442,39 +1470,64 @@ class ChatUI:
 
         def pinger():
             while not stop.is_set():
-                enqueue_sys(self.room,self.nick,"ping",self.server,self.f); time.sleep(PING_INTERVAL)
+                enqueue_sys(self.room,self.nick,"ping",self.server,self.f)
+                time.sleep(PING_INTERVAL)
         threading.Thread(target=pinger,daemon=True).start()
 
-        with Live(self.layout,refresh_per_second=10,screen=False) as live:
+        # Adjust refresh rate based on terminal type
+        refresh_rate = 3 if self.is_mobile else 10
+        with Live(self.layout,refresh_per_second=refresh_rate,screen=False) as live:
             while True:
+                current_time = time.time()
+                
+                # Throttle updates on mobile
+                if self.is_mobile and (current_time - self.last_update_time) < 0.2:  # 200ms minimum between updates
+                    time.sleep(0.1)
+                    continue
+
                 # Check for buffer changes
                 if len(self.buf)!=self.last_len:
-                    self.last_len=len(self.buf); self.redraw=True
+                    self.last_len=len(self.buf)
+                    self.redraw=True
                 
                 # Check for input changes
                 curr_in="".join(current_input)
                 if curr_in!=self.last_input:
-                    self.last_input=curr_in; self.redraw=True
+                    self.last_input=curr_in
+                    self.redraw=True
                 
-                # Check for terminal size changes (for responsive UI)
-                try:
-                    import shutil
-                    current_size = shutil.get_terminal_size()
-                    current_size_tuple = (current_size.lines, current_size.columns)
-                    if current_size_tuple != self.last_terminal_size:
-                        self.last_terminal_size = current_size_tuple
-                        self.redraw = True  # Trigger redraw on terminal resize
-                except:
-                    pass  # Ignore errors in terminal size detection
+                # Throttled terminal size check
+                if current_time - self.last_size_check > (1.0 if self.is_mobile else 0.2):
+                    try:
+                        import shutil
+                        current_size = shutil.get_terminal_size()
+                        current_size_tuple = (current_size.lines, current_size.columns)
+                        if current_size_tuple != self.last_terminal_size:
+                            self.last_terminal_size = current_size_tuple
+                            self.is_mobile = current_size.columns < 80
+                            self.redraw = True
+                        self.last_size_check = current_time
+                    except:
+                        pass
 
                 if self.redraw:
-                    self.layout["header"].update(self._head())
-                    self.layout["body"].update(self._body())
-                    self.layout["input"].update(self._inp())
-                    live.refresh(); self.redraw=False
+                    try:
+                        self.layout["header"].update(self._head())
+                        self.layout["body"].update(self._body())
+                        self.layout["input"].update(self._inp())
+                        live.refresh()
+                        self.redraw = False
+                        self.last_update_time = current_time
+                    except Exception as e:
+                        # Silently handle render errors to avoid cluttering the chat
+                        time.sleep(0.2)
+                        continue
 
-                try: line=input_queue.get_nowait()
-                except queue.Empty: time.sleep(0.05); continue
+                try: 
+                    line=input_queue.get_nowait()
+                except queue.Empty: 
+                    time.sleep(0.2 if self.is_mobile else 0.05)
+                    continue
 
                 self.redraw=True
                 if not line: continue
