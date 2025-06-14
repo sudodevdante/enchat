@@ -12,19 +12,22 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from rich import box
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
-from rich.prompt import Prompt
+from rich.prompt import Prompt, Confirm
 from rich.text import Text
 from rich.align import Align
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskID
+from rich.style import Style
 import logging
 import platform
 import ctypes
 import gc
 import secrets
+import shutil
 
 # — local —
 import session_key
@@ -69,6 +72,14 @@ file_chunks: dict[str, dict] = {}  # Store chunks during transfer
 
 # ── crypto helpers ────────────────────────────────────────────────────
 def gen_key(pw:str)->bytes:
+    # For public rooms, use a static key
+    if session_key.is_public_room(pw):
+        # Use normalized room name to ensure consistent key generation
+        normalized = session_key.normalize_public_room_name(pw)
+        # Generate a fixed key for public room that's valid for Fernet
+        public_key = hashlib.sha256(b"public_room_static_key").digest()
+        return base64.urlsafe_b64encode(public_key)
+    
     salt = hashlib.sha256(b"enchat_v3_static_salt").digest()[:16]
     kdf  = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100_000)
     return base64.urlsafe_b64encode(kdf.derive(pw.encode()))
@@ -896,6 +907,21 @@ def find_enchat_files() -> Set[str]:
     
     return files_to_wipe
 
+def get_all_config_locations():
+    """Get all possible configuration file locations"""
+    locations = {
+        'config': os.path.expanduser("~/.enchat.conf"),
+        'keychain': None,  # Handled by wipe_keychain_entries
+        'downloads': os.path.join(os.path.dirname(__file__), "downloads"),
+        'temp': os.path.join(tempfile.gettempdir(), "enchat_files"),
+        'cache': os.path.join(os.path.dirname(__file__), "__pycache__"),
+        'history': {
+            'zsh': os.path.expanduser("~/.zsh_history"),
+            'bash': os.path.expanduser("~/.bash_history")
+        }
+    }
+    return locations
+
 def secure_wipe():
     """
     Securely wipe all Enchat data
@@ -924,16 +950,42 @@ def secure_wipe():
             gc.collect()
             progress.update(overall_task, advance=10)
             
-            # 2. Wipe configuration file
-            progress.update(overall_task, description="[cyan]Wiping configuration...")
-            config_path = os.path.expanduser("~/.enchat.conf")
-            if os.path.exists(config_path):
-                success, error = secure_delete_file(config_path)
+            # 2. Get all configuration locations
+            locations = get_all_config_locations()
+            
+            # 3. Wipe configuration files
+            progress.update(overall_task, description="[cyan]Wiping configuration files...")
+            
+            # Main config file
+            if os.path.exists(locations['config']):
+                success, error = secure_delete_file(locations['config'])
                 if not success:
                     progress.console.print(f"[yellow]⚠️  Warning: Could not fully wipe config: {error}[/]")
+            
+            # Downloads directory
+            if os.path.exists(locations['downloads']):
+                try:
+                    shutil.rmtree(locations['downloads'])
+                except Exception as e:
+                    progress.console.print(f"[yellow]⚠️  Warning: Could not remove downloads directory: {str(e)}[/]")
+            
+            # Temp files
+            if os.path.exists(locations['temp']):
+                try:
+                    shutil.rmtree(locations['temp'])
+                except Exception as e:
+                    progress.console.print(f"[yellow]⚠️  Warning: Could not remove temp directory: {str(e)}[/]")
+            
+            # Cache files
+            if os.path.exists(locations['cache']):
+                try:
+                    shutil.rmtree(locations['cache'])
+                except Exception as e:
+                    progress.console.print(f"[yellow]⚠️  Warning: Could not remove cache directory: {str(e)}[/]")
+                    
             progress.update(overall_task, advance=30)
             
-            # 3. Clear keychain entries
+            # 4. Clear keychain entries
             progress.update(overall_task, description="[cyan]Clearing keychain entries...")
             keychain_success, keychain_warnings = wipe_keychain_entries()
             if keychain_warnings:
@@ -941,40 +993,26 @@ def secure_wipe():
                     progress.console.print(f"[yellow]⚠️  {warning}[/]")
             progress.update(overall_task, advance=20)
             
-            # 4. Clear system artifacts
+            # 5. Clear system artifacts
             progress.update(overall_task, description="[cyan]Clearing system artifacts...")
             
-            # Clear clipboard if it contains sensitive data
-            try:
-                if platform.system() == 'Darwin':  # macOS
-                    os.system('pbcopy < /dev/null')
-                elif platform.system() == 'Linux':
-                    os.system('xsel -cb')  # X11
-                    os.system('wl-copy --clear')  # Wayland
-                elif platform.system() == 'Windows':
-                    os.system('cmd /c "echo off | clip"')
-            except:
-                pass
-                
-            # Clear shell history entries containing 'enchat'
-            shell = os.environ.get('SHELL', '')
-            if 'zsh' in shell:
-                history_file = os.path.expanduser('~/.zsh_history')
-            elif 'bash' in shell:
-                history_file = os.path.expanduser('~/.bash_history')
+            # Clear clipboard
+            clear_clipboard()
             
-            if os.path.exists(history_file):
-                try:
-                    with open(history_file, 'r') as f:
-                        lines = f.readlines()
-                    with open(history_file, 'w') as f:
-                        f.writelines([l for l in lines if 'enchat' not in l.lower()])
-                except:
-                    pass
+            # Clear shell history
+            for shell, history_file in locations['history'].items():
+                if os.path.exists(history_file):
+                    try:
+                        with open(history_file, 'r') as f:
+                            lines = f.readlines()
+                        with open(history_file, 'w') as f:
+                            f.writelines([l for l in lines if 'enchat' not in l.lower()])
+                    except Exception as e:
+                        progress.console.print(f"[yellow]⚠️  Warning: Could not clean {shell} history: {str(e)}[/]")
                     
             progress.update(overall_task, advance=20)
             
-            # 5. Final cleanup
+            # 6. Final cleanup
             progress.update(overall_task, description="[cyan]Performing final cleanup...")
             gc.collect()  # One final GC run
             progress.update(overall_task, advance=10)
@@ -990,6 +1028,81 @@ def secure_wipe():
     console.print("\n[bold green]🔒 Enchat data has been securely wiped![/]")
     console.print("[dim]Note: Some traces may remain in system memory until reboot[/]")
     console.print("[dim]For maximum security, consider rebooting your system[/]")
+
+def reset_enchat():
+    """
+    Reset Enchat configuration and keys
+    """
+    console = Console()
+    
+    console.print("\n[yellow]🔄 ENCHAT RESET - CLEAR CONFIGURATION[/]")
+    console.print("This will clear:")
+    console.print("  • Saved room settings")
+    console.print("  • Stored encryption keys")
+    console.print("  • Keychain entries")
+    console.print("  • Configuration files")
+    console.print("  • Temporary files")
+    console.print()
+    
+    # Confirm
+    confirm = input("Are you sure you want to reset Enchat configuration? [y/n]: ")
+    if confirm.lower() != 'y':
+        console.print("[green]Cancelled - configuration preserved[/]")
+        return
+    
+    console.print("\nClearing configuration...\n")
+    
+    wiped = []
+    warnings = []
+    
+    # Get all configuration locations
+    locations = get_all_config_locations()
+    
+    # 1. Clear config file
+    if os.path.exists(locations['config']):
+        try:
+            os.remove(locations['config'])
+            wiped.append("Configuration file")
+        except Exception as e:
+            warnings.append(f"Could not delete config file: {str(e)}")
+    
+    # 2. Clear keychain entries
+    keychain_success, keychain_warnings = wipe_keychain_entries()
+    if keychain_success:
+        wiped.append("Keychain entries")
+    warnings.extend(keychain_warnings)
+    
+    # 3. Clear temp files
+    if os.path.exists(locations['temp']):
+        try:
+            shutil.rmtree(locations['temp'])
+            wiped.append("Temporary files")
+        except Exception as e:
+            warnings.append(f"Could not remove temp files: {str(e)}")
+    
+    # 4. Clear cache
+    if os.path.exists(locations['cache']):
+        try:
+            shutil.rmtree(locations['cache'])
+            wiped.append("Cache files")
+        except Exception as e:
+            warnings.append(f"Could not remove cache: {str(e)}")
+    
+    # Print results
+    if wiped:
+        console.print("[green]✅ Successfully cleared:[/]")
+        for item in wiped:
+            console.print(f"  • {item}")
+        console.print()
+    
+    if warnings:
+        console.print("[yellow]⚠️  Warnings:[/]")
+        for warning in warnings:
+            console.print(f"  • {warning}")
+        console.print()
+    
+    console.print("[bold green]🔄 Reset complete![/]")
+    console.print("[dim]You can now join a room with new settings[/]")
 
 # ── config / keyring ──────────────────────────────────────────────────
 def save_passphrase_keychain(room,secret):
@@ -1045,50 +1158,66 @@ def outbox_worker(stop_evt:threading.Event):
         except queue.Empty:
             continue
         
-        # Check if we need to rotate session key
-        if session_key.should_rotate_key(room):
-            new_key = session_key.generate_session_key()
-            session_key.set_session_key(room, new_key)
-            # Broadcast new session key
-            encrypted_key = session_key.encrypt_session_key(new_key, f)
-            body = f"SESSIONKEY:{encrypted_key}"
-            url = f"{server}/{room}"
-            try:
-                session.post(url, data=body, timeout=15)
-            except Exception:
-                pass
+        # For public rooms, don't use encryption
+        is_public = session_key.is_public_room(room)
+        
+        if not is_public:
+            # Check if we need to rotate session key
+            if session_key.should_rotate_key(room):
+                new_key = session_key.generate_session_key()
+                session_key.set_session_key(room, new_key)
+                # Broadcast new session key
+                encrypted_key = session_key.encrypt_session_key(new_key, f)
+                body = f"SESSIONKEY:{encrypted_key}"
+                url = f"{server}/{room}"
+                try:
+                    session.post(url, data=body, timeout=15)
+                except Exception:
+                    pass
 
-        # Get current session key
-        current_key = session_key.get_session_key(room)
-        if not current_key:
-            current_key = session_key.generate_session_key()
-            session_key.set_session_key(room, current_key)
-            # Broadcast new session key
-            encrypted_key = session_key.encrypt_session_key(current_key, f)
-            body = f"SESSIONKEY:{encrypted_key}"
-            url = f"{server}/{room}"
-            try:
-                session.post(url, data=body, timeout=15)
-            except Exception:
-                pass
+            # Get current session key
+            current_key = session_key.get_session_key(room)
+            if not current_key:
+                current_key = session_key.generate_session_key()
+                session_key.set_session_key(room, current_key)
+                # Broadcast new session key
+                encrypted_key = session_key.encrypt_session_key(current_key, f)
+                body = f"SESSIONKEY:{encrypted_key}"
+                url = f"{server}/{room}"
+                try:
+                    session.post(url, data=body, timeout=15)
+                except Exception:
+                    pass
 
-        # Double encrypt: first with session key, then with room key
+        # Handle message encryption based on room type
         if kind=="MSG":
             msg = f'{int(time.time())}|{nick}|{payload}'
-            session_encrypted = session_key.encrypt_with_session(msg, current_key)
-            body = f"MSG:{encrypt(session_encrypted, f)}"
+            if is_public:
+                body = f"MSG:{msg}"  # No encryption for public rooms
+            else:
+                session_encrypted = session_key.encrypt_with_session(msg, current_key)
+                body = f"MSG:{encrypt(session_encrypted, f)}"
         elif kind=="SYS":
             msg = f'{int(time.time())}|{nick}|SYSTEM:{payload}'
-            session_encrypted = session_key.encrypt_with_session(msg, current_key)
-            body = f"SYS:{encrypt(session_encrypted, f)}"
+            if is_public:
+                body = f"SYS:{msg}"  # No encryption for public rooms
+            else:
+                session_encrypted = session_key.encrypt_with_session(msg, current_key)
+                body = f"SYS:{encrypt(session_encrypted, f)}"
         elif kind=="FILEMETA":
             msg = f'{int(time.time())}|{nick}|{payload}'
-            session_encrypted = session_key.encrypt_with_session(msg, current_key)
-            body = f"FILEMETA:{encrypt(session_encrypted, f)}"
+            if is_public:
+                body = f"FILEMETA:{msg}"  # No encryption for public rooms
+            else:
+                session_encrypted = session_key.encrypt_with_session(msg, current_key)
+                body = f"FILEMETA:{encrypt(session_encrypted, f)}"
         elif kind=="FILECHUNK":
             msg = f'{int(time.time())}|{nick}|{payload}'
-            session_encrypted = session_key.encrypt_with_session(msg, current_key)
-            body = f"FILECHUNK:{encrypt(session_encrypted, f)}"
+            if is_public:
+                body = f"FILECHUNK:{msg}"  # No encryption for public rooms
+            else:
+                session_encrypted = session_key.encrypt_with_session(msg, current_key)
+                body = f"FILECHUNK:{encrypt(session_encrypted, f)}"
         else:
             continue
             
@@ -1113,6 +1242,8 @@ def listener(room,nick,f,server,buf,stop):
     headers={"Accept":"text/event-stream","Cache-Control":"no-cache"}
     seen:set[str]=set(); join_ts=int(time.time())
     room_participants.add(nick)
+    is_public = session_key.is_public_room(room)
+    
     with requests.Session() as sess:
         while not stop.is_set():
             try:
@@ -1124,8 +1255,8 @@ def listener(room,nick,f,server,buf,stop):
                         if h in seen: continue
                         seen.add(h); seen=set(list(seen)[-MAX_SEEN:])
                         
-                        # Handle session key updates
-                        if raw.startswith("SESSIONKEY:"):
+                        # Skip session key updates for public rooms
+                        if not is_public and raw.startswith("SESSIONKEY:"):
                             encrypted_key = raw[11:]  # Skip "SESSIONKEY:"
                             new_key = session_key.decrypt_session_key(encrypted_key, f)
                             if new_key:
@@ -1141,17 +1272,21 @@ def listener(room,nick,f,server,buf,stop):
                         else:
                             kind,enc=raw[:4],raw[4:]
                             
-                        # First decrypt with room key
-                        plain = decrypt(enc, f)
-                        if not plain: continue
-                        
-                        # Then decrypt with session key
-                        current_key = session_key.get_session_key(room)
-                        if not current_key:
-                            continue  # No valid session key yet
+                        if is_public:
+                            # For public rooms, messages are not encrypted
+                            msg = enc
+                        else:
+                            # First decrypt with room key
+                            plain = decrypt(enc, f)
+                            if not plain: continue
                             
-                        msg = session_key.decrypt_with_session(plain, current_key)
-                        if not msg: continue
+                            # Then decrypt with session key
+                            current_key = session_key.get_session_key(room)
+                            if not current_key:
+                                continue  # No valid session key yet
+                                
+                            msg = session_key.decrypt_with_session(plain, current_key)
+                            if not msg: continue
                         
                         ts,sender,content=msg.split("|",2)
                         
@@ -1239,15 +1374,24 @@ class ChatUI:
         )
         self.redraw=True; self.last_len=len(buf); self.last_input=""
         self.last_terminal_size=(0,0)  # Track terminal size changes
+        
+        # Show warning for public rooms
+        if session_key.is_public_room(room):
+            info = session_key.get_public_room_info(room)
+            if info:
+                self.buf.append(("System", info["warning"], False))
+                self.buf.append(("System", "Type /security for more information", False))
 
     # ─ render helpers ─
     def _head(self):
+        room_status = ("PUBLIC", "bold red") if session_key.is_public_room(self.room) else ("PRIVATE", "bold green")
         return Panel(Text.assemble(
-            (" ENCHAT ","bold cyan"),
-            (" CONNECTED ","bold green"),
-            (f" {self.room} ","white"),
-            (f" {self.nick} ","magenta"),
-            (" | "+self.server.replace("https://",""),"dim")),style="blue")
+            (" ENCHAT ", "bold cyan"),
+            (" CONNECTED ", "bold green"),
+            (" ", "white"), room_status, (" ", "white"),
+            (f" {self.room} ", "white"),
+            (f" {self.nick} ", "magenta"),
+            (" | " + self.server.replace("https://", ""), "dim")), style="blue")
     def _body(self):
         # Calculate available space for messages (terminal height - header - input - panel borders)
         try:
@@ -1266,16 +1410,25 @@ class ChatUI:
         
         t=Text()
         for u,m,own in messages_to_show:
-            if u=="System": t.append(f"[SYSTEM] {m}\n",style="yellow")
+            if u=="System":
+                # Handle both plain strings and Text objects for system messages
+                if isinstance(m, Text):
+                    t.append("[SYSTEM] ", style="yellow")
+                    t.append(m)
+                    t.append("\n")
+                else:
+                    t.append(f"[SYSTEM] {m}\n", style="yellow")
             else:
                 lab,st=("You","green") if own else (u,"cyan")
-                t.append(f"{lab}: ",style=st); t.append(f"{m}\n")
+                t.append(f"{lab}: ",style=st)
+                t.append(f"{m}\n")
         return Panel(t,title=f"Messages ({len(self.buf)}) - showing newest",padding=(0,1))
     def _inp(self):
         entered="".join(current_input)
-        txt=Text(f"{self.nick}: ",style="bold green")
-        txt.append(entered or "…",style="white")
-        txt.append(f"  {len(entered)}/{MAX_MSG_LEN}",style="dim")
+        txt=Text()
+        txt.append(f"{self.nick}: ", style="bold green")
+        txt.append(entered or "…", style="white")
+        txt.append(f"  {len(entered)}/{MAX_MSG_LEN}", style="dim")
         return Panel(Align.left(txt),title="Type message",padding=(0,1))
 
     # ─ main loop ─
@@ -1331,89 +1484,139 @@ class ChatUI:
                 if line=="/who":
                     room_participants.add(self.nick)
                     users=sorted(room_participants)
-                    self.buf.append(("System",f"=== ONLINE ({len(users)}) ===",False))
+                    header = Text.assemble(
+                        "=== ONLINE (", 
+                        (str(len(users)), "green"), 
+                        ") ===")
+                    self.buf.append(("System", header, False))
                     for u in users:
-                        tag="👑" if u==self.nick else "●"
-                        self.buf.append(("System",f"{tag} {u}",False))
+                        tag = "👑" if u==self.nick else "●"
+                        msg = Text.assemble(
+                            f"{tag} {u} (", 
+                            ("active", "green"), 
+                            ")")
+                        self.buf.append(("System", msg, False))
                     trim(self.buf); continue
                 if line=="/help":
+                    self.buf.append(("System", "=== AVAILABLE COMMANDS ===", False))
                     for c,d in [("/help","help"),("/who","online users"),("/stats","stats"),
                                 ("/security","crypto info"),("/server","server info"),("/notifications","toggle notifications"),
                                 ("/share <file>","share file (encrypted transfer)"),("/files","list available files"),("/download <id>","download file"),
                                 ("/clear","clear"),("/exit","quit")]:
-                        self.buf.append(("System",f"{c}: {d}",False))
+                        msg = Text.assemble((c, "cyan"), f": {d}")
+                        self.buf.append(("System", msg, False))
                     trim(self.buf); continue
                 if line=="/stats":
                     tot=len([m for m in self.buf if m[0]!="System"])
                     mine=len([m for m in self.buf if m[0]==self.nick])
-                    self.buf.append(("System",f"Sent {mine}, Recv {tot-mine}, Total {tot}",False))
+                    msg = Text.assemble(
+                        "Sent ", (str(mine), "cyan"), 
+                        ", Recv ", (str(tot-mine), "magenta"), 
+                        ", Total ", (str(tot), "green"))
+                    self.buf.append(("System", msg, False))
                     trim(self.buf); continue
                 if line=="/security":
-                    self.buf.append(("System","=== SECURITY STATUS ===",False))
-                    self.buf.append(("System","🔒 Base Encryption: AES-256-Fernet, PBKDF2-SHA256 (100k)",False))
+                    self.buf.append(("System", "=== SECURITY STATUS ===", False))
                     
-                    # Session key status
-                    current_key = session_key.get_session_key(self.room)
-                    if current_key:
-                        key_age = int(time.time() - session_key._active_sessions[self.room][1])
-                        rotation_in = session_key.SESSION_KEY_ROTATION_INTERVAL - key_age
-                        self.buf.append(("System",f"🔑 Forward Secrecy: Active",False))
-                        self.buf.append(("System",f"  • Session key age: {key_age}s",False))
-                        self.buf.append(("System",f"  • Next rotation in: {rotation_in}s",False))
+                    if session_key.is_public_room(self.room):
+                        self.buf.append(("System", Text.assemble("🔓 PUBLIC ROOM - NO ENCRYPTION ", ("(insecure)", "red")), False))
+                        self.buf.append(("System", Text.assemble("• Messages are NOT encrypted ", ("(no protection)", "red")), False))
+                        self.buf.append(("System", Text.assemble("• Anyone can join and read messages ", ("(public access)", "red")), False))
+                        self.buf.append(("System", Text.assemble("• Do not share sensitive information ", ("(warning)", "red")), False))
+                        self.buf.append(("System", Text.assemble("• Use private rooms for secure communication ", ("(recommended)", "green")), False))
                     else:
-                        self.buf.append(("System","🔑 Forward Secrecy: Waiting for session key...",False))
-                    
-                    # Room security
-                    self.buf.append(("System",f"🏠 Room: {self.room}",False))
-                    self.buf.append(("System",f"  • Double encryption: Room key + Session key",False))
-                    self.buf.append(("System",f"  • Perfect Forward Secrecy: Enabled",False))
-                    self.buf.append(("System",f"  • Key rotation interval: {session_key.SESSION_KEY_ROTATION_INTERVAL}s",False))
+                        self.buf.append(("System", Text.assemble("🔒 Base Encryption: AES-256-Fernet, PBKDF2-SHA256 (100k) ", ("(secure)", "green")), False))
+                        
+                        # Session key status
+                        current_key = session_key.get_session_key(self.room)
+                        if current_key:
+                            key_age = int(time.time() - session_key._active_sessions[self.room][1])
+                            rotation_in = session_key.SESSION_KEY_ROTATION_INTERVAL - key_age
+                            self.buf.append(("System", Text.assemble("🔑 Forward Secrecy: Active ", ("(enabled)", "green")), False))
+                            self.buf.append(("System", Text.assemble(
+                                "  • Session key age: ", (f"{key_age}s", "cyan"),
+                                " ", ("(fresh)" if key_age < 300 else "(rotating soon)", "green" if key_age < 300 else "yellow")), False))
+                            self.buf.append(("System", Text.assemble(
+                                "  • Next rotation in: ", (f"{rotation_in}s", "cyan"),
+                                " ", ("(pending)", "yellow")), False))
+                        else:
+                            self.buf.append(("System", Text.assemble("🔑 Forward Secrecy: Waiting for session key... ", ("(initializing)", "yellow")), False))
+                        
+                        # Room security
+                        self.buf.append(("System", Text.assemble("🏠 Room: ", (self.room, "cyan"), " ", ("(private)", "green")), False))
+                        self.buf.append(("System", Text.assemble("  • Double encryption: Room key + Session key ", ("(active)", "green")), False))
+                        self.buf.append(("System", Text.assemble("  • Perfect Forward Secrecy: Enabled ", ("(active)", "green")), False))
+                        self.buf.append(("System", Text.assemble(
+                            "  • Key rotation interval: ", 
+                            (f"{session_key.SESSION_KEY_ROTATION_INTERVAL}s", "cyan"),
+                            " ", ("(automatic)", "green")), False))
                     
                     # File transfer security
-                    self.buf.append(("System","📁 File Transfer Security:",False))
-                    self.buf.append(("System",f"  • End-to-end encrypted chunks: {CHUNK_SIZE//1024}KB",False))
-                    self.buf.append(("System",f"  • SHA256 integrity verification",False))
-                    self.buf.append(("System",f"  • Max file size: {MAX_FILE_SIZE//1024//1024}MB",False))
+                    self.buf.append(("System", "📁 File Transfer Security:", False))
+                    self.buf.append(("System", Text.assemble(
+                        "  • End-to-end encrypted chunks: ", 
+                        (f"{CHUNK_SIZE//1024}KB", "cyan"),
+                        " ", ("(optimal)", "green")), False))
+                    self.buf.append(("System", Text.assemble("  • SHA256 integrity verification ", ("(verified)", "green")), False))
+                    self.buf.append(("System", Text.assemble(
+                        "  • Max file size: ", 
+                        (f"{MAX_FILE_SIZE//1024//1024}MB", "cyan"),
+                        " ", ("(configured)", "green")), False))
                     
                     # System security
-                    self.buf.append(("System","🛡️ System Security:",False))
-                    self.buf.append(("System",f"  • Memory-only session keys",False))
-                    self.buf.append(("System",f"  • Zero server knowledge",False))
+                    self.buf.append(("System", "🛡️ System Security:", False))
+                    self.buf.append(("System", Text.assemble("  • Memory-only session keys ", ("(secure)", "green")), False))
+                    self.buf.append(("System", Text.assemble("  • Zero server knowledge ", ("(private)", "green")), False))
                     if KEYRING_AVAILABLE:
-                        self.buf.append(("System",f"  • Secure keyring available: Yes",False))
+                        self.buf.append(("System", Text.assemble("  • Secure keyring available: ", ("Yes", "green"), " ", ("(protected)", "green")), False))
                     else:
-                        self.buf.append(("System",f"  • Secure keyring available: No",False))
+                        self.buf.append(("System", Text.assemble("  • Secure keyring available: ", ("No", "red"), " ", ("(warning)", "red")), False))
                     
                     # Server info
-                    self.buf.append(("System","🌐 Server:",False))
+                    self.buf.append(("System", "🌐 Server:", False))
                     if self.server == ENCHAT_NTFY:
-                        self.buf.append(("System",f"  • Using dedicated Enchat server",False))
+                        self.buf.append(("System", Text.assemble("  • Using dedicated Enchat server ", ("(recommended)", "green")), False))
                     elif self.server == DEFAULT_NTFY:
-                        self.buf.append(("System",f"  • Using public ntfy.sh server",False))
+                        self.buf.append(("System", Text.assemble("  • Using public ntfy.sh server ", ("(public)", "yellow")), False))
                     else:
-                        self.buf.append(("System",f"  • Using custom server: {self.server}",False))
+                        self.buf.append(("System", Text.assemble(
+                            "  • Using custom server: ", 
+                            (self.server, "cyan"), 
+                            " ", ("(self-hosted)", "yellow")), False))
                     
                     trim(self.buf)
                     continue
                 if line=="/notifications":
                     global notifications_enabled
                     notifications_enabled = not notifications_enabled
-                    status = "enabled" if notifications_enabled else "disabled"
-                    self.buf.append(("System", f"📱 Notifications {status}", False))
+                    status = ("enabled", "green") if notifications_enabled else ("disabled", "red")
+                    msg = Text.assemble("📱 Notifications ", status)
+                    self.buf.append(("System", msg, False))
                     trim(self.buf); continue
                 if line=="/files":
                     if not available_files:
-                        self.buf.append(("System", "📂 No files available for download", False))
+                        msg = Text.assemble("📂 No files available for download ", ("(empty)", "yellow"))
+                        self.buf.append(("System", msg, False))
                     else:
-                        self.buf.append(("System", f"📂 AVAILABLE FILES ({len(available_files)})", False))
+                        msg = Text.assemble(
+                            "📂 AVAILABLE FILES (",
+                            (str(len(available_files)), "cyan"),
+                            ")")
+                        self.buf.append(("System", msg, False))
                         for file_id, info in available_files.items():
                             meta = info['metadata']
                             sender = info['sender']
-                            status = "✅ Ready" if info['complete'] else f"📥 {info['chunks_received']}/{info['total_chunks']}"
-                            size_mb = meta['size'] / (1024 * 1024)
-                            # SECURITY: Sanitize filename for display to prevent terminal injection
-                            display_name = sanitize_filename(meta['filename'], file_id)
-                            self.buf.append(("System", f"  {file_id}: {display_name} ({size_mb:.1f}MB) from {sender} - {status}", False))
+                            if info['complete']:
+                                status = ("✅ Ready", "green")
+                            else:
+                                progress = f"📥 {info['chunks_received']}/{info['total_chunks']}"
+                                status = (progress, "yellow")
+                            msg = Text.assemble(
+                                f"ID: {file_id} - From: ", 
+                                (sender, "cyan"), 
+                                " - Status: ",
+                                status)
+                            self.buf.append(("System", msg, False))
                     trim(self.buf); continue
                 if line.startswith("/download "):
                     file_id = line[10:].strip()
@@ -1475,8 +1678,21 @@ class ChatUI:
                         
                         size_mb = file_info['metadata']['size'] / (1024 * 1024)
                         rel_path = os.path.relpath(local_path, os.path.dirname(__file__))
-                        self.buf.append(("System", f"✅ Downloaded: {os.path.basename(local_path)} ({size_mb:.1f}MB)", False))
-                        self.buf.append(("System", f"   📁 Saved to: {rel_path}", False))
+                        
+                        msg = Text.assemble(
+                            ("✅ Downloaded: ", "bold green"),
+                            (os.path.basename(local_path), "cyan"),
+                            (" (", "dim"),
+                            (f"{size_mb:.1f}MB", "yellow"),
+                            (")", "dim")
+                        )
+                        self.buf.append(("System", msg, False))
+                        
+                        msg = Text.assemble(
+                            ("   📁 Saved to: ", "bold"),
+                            (rel_path, "cyan")
+                        )
+                        self.buf.append(("System", msg, False))
                         
                         # Remove from available files after download
                         del available_files[file_id]
@@ -1499,7 +1715,11 @@ class ChatUI:
                     
                     # Expand home directory
                     filepath = os.path.expanduser(filepath)
-                    self.buf.append(("System", f"🔍 Preparing to share: {filepath}", False))
+                    msg = Text.assemble(
+                        ("🔍 Preparing to share: ", "bold"),
+                        (filepath, "cyan")
+                    )
+                    self.buf.append(("System", msg, False))
                     
                     # Split file into chunks and send
                     metadata, chunks = split_file_to_chunks(filepath, self.f)
@@ -1526,8 +1746,25 @@ class ChatUI:
                     file_chunks[file_id] = {i: chunks[i] for i in range(total_chunks)}
                     
                     size_mb = file_size / (1024 * 1024)
-                    self.buf.append(("System", f"📤 Sharing: {filename} ({size_mb:.1f}MB, {total_chunks} chunks)", False))
-                    self.buf.append(("System", f"   File ID: {file_id} (also in your /files for reference)", False))
+                    msg = Text.assemble(
+                        ("📤 Sharing: ", "bold"),
+                        (filename, "cyan"),
+                        (" (", "dim"),
+                        (f"{size_mb:.1f}MB", "yellow"),
+                        (", ", "dim"),
+                        (f"{total_chunks} chunks", "yellow"),
+                        (")", "dim")
+                    )
+                    self.buf.append(("System", msg, False))
+                    
+                    msg = Text.assemble(
+                        ("   File ID: ", "bold"),
+                        (file_id, "magenta"),
+                        (" (also in your ", "dim"),
+                        ("/files", "cyan"),
+                        (" for reference)", "dim")
+                    )
+                    self.buf.append(("System", msg, False))
                     
                     # Send chunks with progress
                     for i, chunk in enumerate(chunks):
@@ -1535,9 +1772,20 @@ class ChatUI:
                         # Show progress every 10% or for small files every chunk
                         if total_chunks <= 10 or (i + 1) % max(1, total_chunks // 10) == 0 or (i + 1) == total_chunks:
                             progress = int(((i + 1) / total_chunks) * 100)
-                            self.buf.append(("System", f"📤 Upload progress: {progress}% ({i + 1}/{total_chunks})", False))
+                            msg = Text.assemble(
+                                ("📤 Upload progress: ", "bold"),
+                                (f"{progress}%", "green"),
+                                (" (", "dim"),
+                                (f"{i + 1}/{total_chunks}", "yellow"),
+                                (")", "dim")
+                            )
+                            self.buf.append(("System", msg, False))
                     
-                    self.buf.append(("System", f"✅ Upload complete: {filename}", False))
+                    msg = Text.assemble(
+                        ("✅ Upload complete: ", "bold green"),
+                        (filename, "cyan")
+                    )
+                    self.buf.append(("System", msg, False))
                     trim(self.buf); continue
                 if line.startswith("/server"):
                     try:
@@ -1567,78 +1815,159 @@ class ChatUI:
 
 # ═════ setup & CLI ═════
 def first_run(args):
-    console.clear(); console.print("[bold cyan]🔐 First-time setup[/]")
-    room=Prompt.ask("🏠 Room").strip().lower()
-    nick=Prompt.ask("👤 Nick").strip()
-    secret=getpass("🔑 Passphrase: ")
-    if args.server: server=args.server.rstrip('/')
-    elif args.enchat_server: server=ENCHAT_NTFY
-    elif args.default_server: server=DEFAULT_NTFY
+    console.clear()
+    
+    # Create a welcome banner
+    console.print(Panel(
+        Text.assemble(
+            ("Welcome to ", "bold white"),
+            ("Enchat", "bold magenta"),
+            ("\nSecure, ", "dim white"),
+            ("encrypted", "bold green"),
+            (" chat in your terminal", "dim white")
+        ),
+        title="Enchat",
+        border_style="magenta"
+    ))
+    
+    # Room selection menu
+    console.print("\nChoose an option:")
+    console.print(Text.assemble(
+        ("1", "bold white"), (") ", "white"),
+        ("Join public room ", "bold yellow"),
+        ("(", "dim white"), ("unencrypted", "red"), (", ", "dim white"),
+        ("open to all", "yellow"), (")", "dim white")
+    ))
+    console.print(Text.assemble(
+        ("2", "bold white"), (") ", "white"),
+        ("Create private room ", "bold green"),
+        ("(", "dim white"), ("encrypted", "green"), (", ", "dim white"),
+        ("invite-only", "cyan"), (")", "dim white")
+    ))
+    console.print(Text.assemble(
+        ("3", "bold white"), (") ", "white"),
+        ("Join private room ", "bold blue"),
+        ("(", "dim white"), ("encrypted", "green"), (", ", "dim white"),
+        ("requires key", "cyan"), (")", "dim white")
+    ))
+    
+    choice = Prompt.ask("\nSelect option", choices=["1", "2", "3"], default="1")
+    
+    if choice == "1":  # Public room
+        room = "public"
+        # Show warning panel for public room
+        console.print(Panel(
+            Text.assemble(
+                ("⚠️  WARNING: Public Room\n\n", "bold red"),
+                ("• Messages are NOT encrypted\n", "yellow"),
+                ("• Anyone can join and read messages\n", "yellow"),
+                ("• Do not share sensitive information\n", "yellow"),
+                ("• Use private rooms for secure communication", "yellow")
+            ),
+            title="Security Notice",
+            border_style="red"
+        ))
+        if Prompt.ask("\nContinue?", choices=["y", "n"], default="n") != "y":
+            sys.exit(0)
+        secret = room  # For public rooms, use room name as key
+        
+    elif choice == "2":  # Create private room
+        console.print("\n[bold cyan]Create Private Room[/]")
+        console.print("[dim]Choose a unique room name and strong passphrase[/]")
+        
+        while True:
+            room = Prompt.ask("Room name").strip().lower()
+            if room == "public":
+                console.print("[red]Cannot use 'public' as a room name. Please choose another.[/]")
+                continue
+            if not room:
+                console.print("[red]Room name cannot be empty.[/]")
+                continue
+            break
+            
+        # Ask if user wants to input their own key
+        use_custom_key = Prompt.ask("\nDo you want to use your own room key?", choices=["y", "n"], default="n") == "y"
+        
+        if use_custom_key:
+            # Get user's custom key
+            secret = getpass("\n🔑 Enter your room key: ")
+            if not secret:
+                console.print("[red]Key cannot be empty, generating random key instead[/]")
+                secret = base64.urlsafe_b64encode(os.urandom(32)).decode()
+        else:
+            # Generate random room key
+            secret = base64.urlsafe_b64encode(os.urandom(32)).decode()
+        
+        console.print(Panel(
+            Text.assemble(
+                ("🔐 Room Created Successfully!\n\n", "bold green"),
+                ("Room: ", "bold"), (f"{room}\n", "cyan"),
+                ("Key:  ", "bold"), (f"{secret}\n\n", "cyan"),
+                ("Share these details securely with other participants.", "dim")
+            ),
+            title="Room Details",
+            border_style="green"
+        ))
+        
+    else:  # Join private room
+        console.print("\n[bold cyan]Join Private Room[/]")
+        console.print("[dim]Enter the room details shared with you[/]")
+        
+        while True:
+            room = Prompt.ask("Room name").strip().lower()
+            if room == "public":
+                console.print("[red]'public' is a special room name. Use option 1 to join the public room.[/]")
+                continue
+            if not room:
+                console.print("[red]Room name cannot be empty.[/]")
+                continue
+            break
+            
+        secret = getpass("Room key: ")
+    
+    # Get nickname
+    console.print("\n[bold cyan]Profile Setup[/]")
+    nick = Prompt.ask("Display name").strip()
+    
+    # Server selection with improved UI
+    console.print("\n[bold cyan]Server Selection[/]")
+    if args.server:
+        server = args.server.rstrip('/')
+    elif args.enchat_server:
+        server = ENCHAT_NTFY
+    elif args.default_server:
+        server = DEFAULT_NTFY
     else:
-        console.print("[cyan]Server: 1) enchat  2) ntfy.sh  3) custom[/]")
-        ch=Prompt.ask("Choice",choices=["1","2","3"],default="1")
-        server=ENCHAT_NTFY if ch=="1" else DEFAULT_NTFY if ch=="2" else Prompt.ask("URL").rstrip('/')
-    save_conf(room,nick,"",server)
-    if KEYRING_AVAILABLE and Prompt.ask("Save passphrase in keychain?",choices=["y","n"],default="y")=="y":
-        save_passphrase_keychain(room,secret)
-    else: save_conf(room,nick,secret,server)
-    return room,nick,secret,server
-
-def reset_enchat():
-    """
-    Reset Enchat configuration and keys
-    """
-    console = Console()
+        console.print(Panel(
+            Text.assemble(
+                ("1) ", "white"), ("Enchat server", "green"), (" (recommended)\n", "white"),
+                ("2) ", "white"), ("ntfy.sh", "yellow"), (" (public)\n", "white"),
+                ("3) ", "white"), ("Custom server", "blue"), (" (self-hosted)", "white")
+            ),
+            title="Available Servers",
+            border_style="cyan"
+        ))
+        
+        ch = Prompt.ask("Select server", choices=["1", "2", "3"], default="1")
+        if ch == "3":
+            server = Prompt.ask("Server URL").rstrip('/')
+        else:
+            server = ENCHAT_NTFY if ch == "1" else DEFAULT_NTFY
     
-    console.print("\n[yellow]🔄 ENCHAT RESET - CLEAR CONFIGURATION[/]")
-    console.print("This will clear:")
-    console.print("  • Saved room settings")
-    console.print("  • Stored encryption keys")
-    console.print("  • Keychain entries")
-    console.print()
+    # Save configuration
+    save_conf(room, nick, "", server)
     
-    # Confirm
-    confirm = input("Are you sure you want to reset Enchat configuration? [y/n]: ")
-    if confirm.lower() != 'y':
-        console.print("[green]Cancelled - configuration preserved[/]")
-        return
+    # Only save passphrase for private rooms
+    if choice != "1":  # Not public room
+        if KEYRING_AVAILABLE and Prompt.ask("\nSave room key in system keychain?", choices=["y", "n"], default="y") == "y":
+            save_passphrase_keychain(room, secret)
+        else:
+            save_conf(room, nick, secret, server)
     
-    console.print("\nClearing configuration...\n")
+    # Show connection banner
+    console.print("\n[bold green]Connecting to chat...[/]")
     
-    wiped = []
-    warnings = []
-    
-    # 1. Clear config file
-    config_path = os.path.expanduser("~/.enchat.conf")
-    if os.path.exists(config_path):
-        try:
-            # Simple deletion is fine for config
-            os.remove(config_path)
-            wiped.append("Configuration file")
-        except Exception as e:
-            warnings.append(f"Could not delete config file: {str(e)}")
-    
-    # 2. Clear keychain entries
-    keychain_success, keychain_warnings = wipe_keychain_entries()
-    if keychain_success:
-        wiped.append("Keychain entries")
-    warnings.extend(keychain_warnings)
-    
-    # Print results
-    if wiped:
-        console.print("[green]✅ Successfully cleared:[/]")
-        for item in wiped:
-            console.print(f"  • {item}")
-        console.print()
-    
-    if warnings:
-        console.print("[yellow]⚠️  Warnings:[/]")
-        for warning in warnings:
-            console.print(f"  • {warning}")
-        console.print()
-    
-    console.print("[bold green]🔄 Reset complete![/]")
-    console.print("[dim]You can now join a room with new settings[/]")
+    return room, nick, secret, server
 
 def main():
     """
@@ -1723,13 +2052,9 @@ def main():
         os.remove(CONF_FILE)
         console.print("[green]Settings cleared[/]")
         return
-        
-    # Load or create configuration
-    room, nick, secret, server = load_conf()
-    if not room or not nick:
-        room, nick, secret, server = first_run(args)
-    if not secret:
-        secret = getpass("🔑 Passphrase: ")
+    
+    # Always show the new UI and get room details
+    room, nick, secret, server = first_run(args)
     
     # Initialize encryption
     f = Fernet(gen_key(secret))
@@ -1762,6 +2087,10 @@ def join_room(room_name, display_name=None):
     if not room_name:
         print("Error: Room name is required")
         return
+        
+    # Normalize public room names
+    if session_key.is_public_room(room_name):
+        room_name = session_key.normalize_public_room_name(room_name)
         
     # Get display name if not provided
     if not display_name:
@@ -1803,21 +2132,41 @@ def create_room(room_name):
     Create a new chat room
     """
     if not room_name:
-        print("Error: Room name is required")
+        console.print("[red]Error: Room name is required[/]")
         return
         
-    # Generate and show room key
-    room_key = base64.urlsafe_b64encode(os.urandom(32)).decode()
-    print("\n🔑 ROOM KEY (save this securely):")
-    print(f"{room_key}\n")
+    # Normalize public room names
+    if session_key.is_public_room(room_name):
+        room_name = session_key.normalize_public_room_name(room_name)
+        
+    # Ask if user wants to input their own key
+    use_custom_key = Prompt.ask("\nDo you want to use your own room key?", choices=["y", "n"], default="n") == "y"
+    
+    if use_custom_key:
+        while True:
+            room_key = getpass("\n🔑 Enter your room key (must be 32 bytes when base64 decoded): ")
+            try:
+                # Validate key length and base64 format
+                decoded = base64.urlsafe_b64decode(room_key.encode())
+                if len(decoded) == 32:
+                    break
+                console.print("\n[red]Error: Key must be 32 bytes when decoded[/]")
+            except Exception:
+                console.print("\n[red]Error: Key must be valid base64[/]")
+    else:
+        # Generate random room key
+        room_key = base64.urlsafe_b64encode(os.urandom(32)).decode()
+    
+    console.print("\n[green]🔑 ROOM KEY (save this securely):[/]")
+    console.print(f"[cyan]{room_key}[/]\n")
     
     # Show join command
-    print("To join this room, use:")
-    print(f"enchat join {room_name}")
-    print("\nShare the room name and key securely with other participants")
+    console.print("To join this room, use:")
+    console.print(f"[blue]enchat join {room_name}[/]")
+    console.print("\n[yellow]Share the room name and key securely with other participants[/]")
     
     # Ask to join now
-    if input("\nJoin this room now? [y/n]: ").lower() == 'y':
+    if Prompt.ask("\nJoin this room now?", choices=["y", "n"], default="y") == "y":
         join_room(room_name)
 
 if __name__=="__main__":
