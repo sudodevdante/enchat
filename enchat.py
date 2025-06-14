@@ -1385,6 +1385,9 @@ class ChatUI:
         self.cached_header_width = 0  # Track width for header cache invalidation
         self.cached_input = None   # Cache for input panel
         self.cached_input_text = ""  # Track input text for cache invalidation
+        self.cached_body = None    # Cache for body panel
+        self.cached_body_len = 0   # Track message count for body cache
+        self.is_mobile = False     # Track mobile state
         
         # Show warning for public rooms
         if session_key.is_public_room(room):
@@ -1466,25 +1469,24 @@ class ChatUI:
         return self.cached_header
 
     def _body(self):
-        # Calculate available space for messages (terminal height - header - input - panel borders)
+        # Use cached body if message count hasn't changed
+        if not self.redraw and len(self.buf) == self.cached_body_len and self.cached_body:
+            return self.cached_body
+            
+        # Calculate available space for messages
         try:
             import shutil
             terminal_height = shutil.get_terminal_size().lines
-            # Reserve space: 3 for header + 3 for input + 4 for panel borders/padding
-            # Ensure minimum of 3 lines for very small terminals
             available_lines = max(3, terminal_height - 10)
         except:
-            # Fallback for systems where terminal size detection fails
             available_lines = 20
         
         # Take recent messages that fit in available space
-        # Show newest messages first, limit to available lines
         messages_to_show = self.buf[-available_lines:] if len(self.buf) > available_lines else self.buf
         
         t=Text()
         for u,m,own in messages_to_show:
             if u=="System":
-                # Handle both plain strings and Text objects for system messages
                 if isinstance(m, Text):
                     t.append("[SYSTEM] ", style="yellow")
                     t.append(m)
@@ -1495,7 +1497,10 @@ class ChatUI:
                 lab,st=("You","green") if own else (u,"cyan")
                 t.append(f"{lab}: ",style=st)
                 t.append(f"{m}\n")
-        return Panel(t,title=f"Messages ({len(self.buf)}) - showing newest",padding=(0,1))
+                
+        self.cached_body = Panel(t,title=f"Messages ({len(self.buf)}) - showing newest",padding=(0,1))
+        self.cached_body_len = len(self.buf)
+        return self.cached_body
 
     def _inp(self):
         # Use cached input if text hasn't changed
@@ -1527,18 +1532,22 @@ class ChatUI:
                 time.sleep(PING_INTERVAL)
         threading.Thread(target=pinger,daemon=True).start()
 
-        # Adjust refresh rate based on terminal width
+        # Initial terminal size check
         _, width = self._detect_terminal_size()
-        refresh_rate = 3 if width < 80 else 10  # Lower refresh rate for narrow screens
+        self.is_mobile = width < 80
+        
+        # Adjust refresh rate based on device type
+        refresh_rate = 1 if self.is_mobile else 5  # Lower refresh rate for mobile
+        update_interval = 0.5 if self.is_mobile else 0.1  # Longer update interval for mobile
+        size_check_interval = 2.0 if self.is_mobile else 0.5  # Less frequent size checks on mobile
         
         with Live(self.layout,refresh_per_second=refresh_rate,screen=False) as live:
             while True:
                 current_time = time.time()
                 
-                # Throttle updates on narrow screens
-                _, current_width = self._detect_terminal_size()
-                if current_width < 80 and (current_time - self.last_update_time) < 0.2:  # 200ms minimum between updates
-                    time.sleep(0.1)
+                # Throttle all updates on mobile
+                if self.is_mobile and (current_time - self.last_update_time) < update_interval:
+                    time.sleep(0.2)
                     continue
 
                 # Check for buffer changes
@@ -1553,7 +1562,7 @@ class ChatUI:
                     self.redraw=True
                 
                 # Throttled terminal size check
-                if current_time - self.last_size_check > (1.0 if current_width < 80 else 0.2):
+                if current_time - self.last_size_check > size_check_interval:
                     try:
                         import shutil
                         current_size = shutil.get_terminal_size()
@@ -1575,14 +1584,14 @@ class ChatUI:
                         self.redraw = False
                         self.last_update_time = current_time
                     except Exception as e:
-                        # Silently handle render errors to avoid cluttering the chat
+                        # Silently handle render errors
                         time.sleep(0.2)
                         continue
 
                 try: 
                     line=input_queue.get_nowait()
                 except queue.Empty: 
-                    time.sleep(0.2 if current_width < 80 else 0.05)
+                    time.sleep(0.2 if self.is_mobile else 0.05)
                     continue
 
                 self.redraw=True
