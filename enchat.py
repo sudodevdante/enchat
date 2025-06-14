@@ -1403,13 +1403,37 @@ class ChatUI:
             return self.cached_header
             
         room_status = ("PUBLIC", "bold red") if session_key.is_public_room(self.room) else ("PRIVATE", "bold green")
-        self.cached_header = Panel(Text.assemble(
-            (" ENCHAT ", "bold cyan"),
-            (" CONNECTED ", "bold green"),
-            (" ", "white"), room_status, (" ", "white"),
-            (f" {self.room} ", "white"),
-            (f" {self.nick} ", "magenta"),
-            (" | " + self.server.replace("https://", ""), "dim")), style="blue")
+        
+        # For mobile devices, use a more compact layout
+        if self.is_mobile:
+            # First line: ENCHAT + room status
+            line1 = Text.assemble(
+                ("ENCHAT", "bold cyan"),
+                (" ", "white"), room_status)
+            
+            # Second line: room name + nickname
+            line2 = Text.assemble(
+                (f"{self.room}", "white"),
+                (" | ", "dim"),
+                (f"{self.nick}", "magenta"))
+            
+            # Combine lines
+            content = Text()
+            content.append(line1)
+            content.append("\n")
+            content.append(line2)
+            
+            self.cached_header = Panel(content, style="blue")
+        else:
+            # Desktop layout - original single line
+            self.cached_header = Panel(Text.assemble(
+                (" ENCHAT ", "bold cyan"),
+                (" CONNECTED ", "bold green"),
+                (" ", "white"), room_status, (" ", "white"),
+                (f" {self.room} ", "white"),
+                (f" {self.nick} ", "magenta"),
+                (" | " + self.server.replace("https://", ""), "dim")), style="blue")
+            
         return self.cached_header
 
     def _body(self):
