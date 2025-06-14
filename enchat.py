@@ -1366,12 +1366,15 @@ class ChatUI:
     def __init__(self, room,nick,server,f,buf):
         self.room,self.nick,self.server,self.f = room,nick,server,f
         self.buf=buf
-        self.layout=Layout()
-        self.layout.split(
-            Layout(name="header",size=3),
-            Layout(name="body",ratio=1),
-            Layout(name="input",size=3),
+        
+        # Initialize layout with fixed sizes
+        self.layout = Layout()
+        self.layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="body", ratio=1),
+            Layout(name="input", size=3)
         )
+        
         self.redraw=True
         self.last_len=len(buf)
         self.last_input=""
@@ -1422,29 +1425,22 @@ class ChatUI:
         
         # For mobile/narrow devices, use a more compact layout
         if terminal_width < 80:
-            # Ensure room name and nick don't overflow
-            max_name_len = max(10, min(15, (terminal_width - 20) // 2))
-            room_display = self.room[:max_name_len] + ("..." if len(self.room) > max_name_len else "")
-            nick_display = self.nick[:max_name_len] + ("..." if len(self.nick) > max_name_len else "")
-            
             # Build compact header
             content = Text()
-            # First line: Status only
             content.append(Text.assemble(
-                ("ENCHAT", "bold cyan"),
-                (" ", "white"),
+                ("ENCHAT ", "bold cyan"),
                 room_status))
             content.append("\n")
-            # Second line: Room + Nick
             content.append(Text.assemble(
-                (room_display, "white"),
+                (self.room, "white"),
                 (" • ", "dim"),
-                (nick_display, "magenta")))
+                (self.nick, "magenta")))
             
             self.cached_header = Panel(
                 Align.center(content),
                 style="blue",
-                padding=(0, 1)
+                padding=(0, 1),
+                expand=True
             )
         else:
             # Desktop layout - single line with full info
@@ -1454,8 +1450,7 @@ class ChatUI:
                 
             self.cached_header = Panel(
                 Text.assemble(
-                    ("ENCHAT", "bold cyan"),
-                    (" ", "white"),
+                    ("ENCHAT ", "bold cyan"),
                     room_status,
                     (" ", "white"),
                     (f"{self.room}", "white"),
@@ -1464,7 +1459,8 @@ class ChatUI:
                     (" | ", "dim"),
                     (server_display, "dim")),
                 style="blue",
-                padding=(0, 1)
+                padding=(0, 1),
+                expand=True
             )
             
         return self.cached_header
