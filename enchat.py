@@ -1372,12 +1372,14 @@ class ChatUI:
             Layout(name="body",ratio=1),
             Layout(name="input",size=3),
         )
-        self.redraw=True; self.last_len=len(buf); self.last_input=""
+        self.redraw=True
+        self.last_len=len(buf)
+        self.last_input=""
         self.last_terminal_size=(0,0)  # Track terminal size changes
         self.last_size_check = 0  # For throttling size checks
         self.last_update_time = time.time()  # For throttling updates
-        self.is_mobile = self._detect_mobile()
         self.cached_header = None  # Cache for header panel
+        self.cached_header_width = 0  # Track width for header cache invalidation
         self.cached_input = None   # Cache for input panel
         self.cached_input_text = ""  # Track input text for cache invalidation
         
@@ -1388,18 +1390,26 @@ class ChatUI:
                 self.buf.append(("System", info["warning"], False))
                 self.buf.append(("System", "Type /security for more information", False))
 
-    def _detect_mobile(self):
-        """Detect if running in a mobile terminal based on screen width"""
+    def _detect_terminal_size(self):
+        """Get current terminal size with fallback"""
         try:
             import shutil
-            return shutil.get_terminal_size().columns < 80
+            size = shutil.get_terminal_size()
+            return size.lines, size.columns
         except:
-            return False
+            return 24, 80  # Fallback size
 
-    # ─ render helpers ─
+    def _should_redraw_header(self):
+        """Check if header needs to be redrawn"""
+        _, width = self._detect_terminal_size()
+        if width != self.cached_header_width:
+            self.cached_header_width = width
+            return True
+        return False
+
     def _head(self):
-        # Use cached header if available
-        if not self.redraw and self.cached_header:
+        # Only redraw header if terminal width changed or forced redraw
+        if not self._should_redraw_header() and self.cached_header and not self.redraw:
             return self.cached_header
             
         try:
@@ -1521,14 +1531,17 @@ class ChatUI:
                 time.sleep(PING_INTERVAL)
         threading.Thread(target=pinger,daemon=True).start()
 
-        # Adjust refresh rate based on terminal type
-        refresh_rate = 3 if self.is_mobile else 10
+        # Adjust refresh rate based on terminal width
+        _, width = self._detect_terminal_size()
+        refresh_rate = 3 if width < 80 else 10  # Lower refresh rate for narrow screens
+        
         with Live(self.layout,refresh_per_second=refresh_rate,screen=False) as live:
             while True:
                 current_time = time.time()
                 
-                # Throttle updates on mobile
-                if self.is_mobile and (current_time - self.last_update_time) < 0.2:  # 200ms minimum between updates
+                # Throttle updates on narrow screens
+                _, current_width = self._detect_terminal_size()
+                if current_width < 80 and (current_time - self.last_update_time) < 0.2:  # 200ms minimum between updates
                     time.sleep(0.1)
                     continue
 
@@ -1544,7 +1557,7 @@ class ChatUI:
                     self.redraw=True
                 
                 # Throttled terminal size check
-                if current_time - self.last_size_check > (1.0 if self.is_mobile else 0.2):
+                if current_time - self.last_size_check > (1.0 if current_width < 80 else 0.2):
                     try:
                         import shutil
                         current_size = shutil.get_terminal_size()
@@ -1573,7 +1586,7 @@ class ChatUI:
                 try: 
                     line=input_queue.get_nowait()
                 except queue.Empty: 
-                    time.sleep(0.2 if self.is_mobile else 0.05)
+                    time.sleep(0.2 if current_width < 80 else 0.05)
                     continue
 
                 self.redraw=True
