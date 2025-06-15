@@ -1402,18 +1402,19 @@ class ChatUI:
         self.redraw=True
         self.last_len=len(buf)
         self.last_input=""
-        self.last_terminal_size=(0,0)  # Track terminal size changes
-        self.last_size_check = 0  # For throttling size checks
-        self.last_update_time = time.time()  # For throttling updates
-        self.cached_header = None  # Cache for header panel
-        self.cached_header_width = 0  # Track width for header cache invalidation
-        self.cached_input = None   # Cache for input panel
-        self.cached_input_text = ""  # Track input text for cache invalidation
-        self.cached_body = None    # Cache for body panel
-        self.cached_body_len = 0   # Track message count for body cache
-        self.is_mobile = self._detect_is_mobile()  # Detect mobile at startup
+        self.last_terminal_size=(0,0)
+        self.last_size_check = 0
+        self.last_update_time = time.time()
+        self.cached_header = None
+        self.cached_header_width = 0
+        self.cached_input = None
+        self.cached_input_text = ""
+        self.cached_body = None
+        self.cached_body_len = 0
+        self.is_mobile = self._detect_is_mobile()
+        self.is_termius = self._detect_termius()
         
-        # Propagate mobile status to other components
+        # Propagate status
         trim.is_mobile = self.is_mobile
         listener.is_mobile = self.is_mobile
         
@@ -1424,14 +1425,26 @@ class ChatUI:
                 self.buf.append(("System", info["warning"], False))
                 self.buf.append(("System", "Type /security for more information", False))
 
+    def _detect_termius(self):
+        """Detect if running in Termius"""
+        try:
+            term = os.environ.get('TERM', '').lower()
+            term_program = os.environ.get('TERM_PROGRAM', '').lower()
+            return 'termius' in term or 'termius' in term_program
+        except:
+            return False
+
     def _detect_is_mobile(self):
         """Detect if we're running on a mobile/narrow terminal"""
         try:
             import shutil
             width = shutil.get_terminal_size().columns
+            # More aggressive mobile detection for Termius
+            if self._detect_termius():
+                return width < 100  # Wider threshold for Termius
             return width < 80
         except:
-            return False  # Default to desktop on error
+            return False
 
     def _detect_terminal_size(self):
         """Get current terminal size with fallback"""
@@ -1568,8 +1581,6 @@ class ChatUI:
     def run(self):
         stop=threading.Event()
         
-        # Initial mobile detection is already done in __init__
-        
         # Start threads
         listener_thread = threading.Thread(
             target=listener,
@@ -1589,16 +1600,25 @@ class ChatUI:
         threading.Thread(target=pinger,daemon=True).start()
 
         # Adjust refresh rate based on device type
-        refresh_rate = 1 if self.is_mobile else 5  # Lower refresh rate for mobile
-        update_interval = 0.5 if self.is_mobile else 0.1  # Longer update interval for mobile
-        size_check_interval = 2.0 if self.is_mobile else 0.5  # Less frequent size checks on mobile
+        if self.is_termius:
+            refresh_rate = 0.2  # Extremely low refresh rate for Termius
+            update_interval = 2.0  # Much longer update interval
+            size_check_interval = 10.0  # Very infrequent size checks
+        else:
+            refresh_rate = 1 if self.is_mobile else 5
+            update_interval = 0.5 if self.is_mobile else 0.1
+            size_check_interval = 2.0 if self.is_mobile else 0.5
         
         with Live(self.layout,refresh_per_second=refresh_rate,screen=False) as live:
             while True:
                 current_time = time.time()
                 
-                # Throttle all updates on mobile
-                if self.is_mobile and (current_time - self.last_update_time) < update_interval:
+                # Extra throttling for Termius
+                if self.is_termius and (current_time - self.last_update_time) < update_interval:
+                    time.sleep(1.0)  # Much longer sleep for Termius
+                    continue
+                # Regular mobile throttling
+                elif self.is_mobile and (current_time - self.last_update_time) < update_interval:
                     time.sleep(0.2)
                     continue
 
@@ -1621,11 +1641,16 @@ class ChatUI:
                         current_size_tuple = (current_size.lines, current_size.columns)
                         if current_size_tuple != self.last_terminal_size:
                             self.last_terminal_size = current_size_tuple
-                            if self._update_mobile_status():  # Update mobile status
-                                # Update refresh rates if mobile status changed
-                                refresh_rate = 1 if self.is_mobile else 5
-                                update_interval = 0.5 if self.is_mobile else 0.1
-                                size_check_interval = 2.0 if self.is_mobile else 0.5
+                            if self._update_mobile_status():
+                                # Update refresh rates
+                                if self.is_termius:
+                                    refresh_rate = 0.2
+                                    update_interval = 2.0
+                                    size_check_interval = 10.0
+                                else:
+                                    refresh_rate = 1 if self.is_mobile else 5
+                                    update_interval = 0.5 if self.is_mobile else 0.1
+                                    size_check_interval = 2.0 if self.is_mobile else 0.5
                             self.redraw = True
                         self.last_size_check = current_time
                     except:
@@ -1633,357 +1658,22 @@ class ChatUI:
 
                 if self.redraw:
                     try:
-                        self.layout["header"].update(self._head())
-                        self.layout["body"].update(self._body())
-                        self.layout["input"].update(self._inp())
+                        # For Termius, only update what's necessary
+                        if self.is_termius:
+                            if len(self.buf) != self.cached_body_len:
+                                self.layout["body"].update(self._body())
+                            if curr_in != self.cached_input_text:
+                                self.layout["input"].update(self._inp())
+                        else:
+                            self.layout["header"].update(self._head())
+                            self.layout["body"].update(self._body())
+                            self.layout["input"].update(self._inp())
                         live.refresh()
                         self.redraw = False
                         self.last_update_time = current_time
                     except Exception as e:
-                        # Silently handle render errors
-                        time.sleep(0.2)
+                        time.sleep(0.5 if self.is_termius else 0.2)
                         continue
-
-                try: 
-                    line=input_queue.get_nowait()
-                except queue.Empty: 
-                    time.sleep(0.2 if self.is_mobile else 0.05)
-                    continue
-
-                self.redraw=True
-                if not line: continue
-                # ─ commands ─
-                if line=="/exit": break
-                if line=="/clear": self.buf.clear(); continue
-                if line=="/who":
-                    room_participants.add(self.nick)
-                    users=sorted(room_participants)
-                    header = Text.assemble(
-                        "=== ONLINE (", 
-                        (str(len(users)), "green"), 
-                        ") ===")
-                    self.buf.append(("System", header, False))
-                    for u in users:
-                        tag = "👑" if u==self.nick else "●"
-                        msg = Text.assemble(
-                            f"{tag} {u} (", 
-                            ("active", "green"), 
-                            ")")
-                        self.buf.append(("System", msg, False))
-                    trim(self.buf); continue
-                if line=="/help":
-                    self.buf.append(("System", "=== AVAILABLE COMMANDS ===", False))
-                    for c,d in [("/help","help"),("/who","online users"),("/stats","stats"),
-                                ("/security","crypto info"),("/server","server info"),("/notifications","toggle notifications"),
-                                ("/share <file>","share file (encrypted transfer)"),("/files","list available files"),("/download <id>","download file"),
-                                ("/clear","clear"),("/exit","quit")]:
-                        msg = Text.assemble((c, "cyan"), f": {d}")
-                        self.buf.append(("System", msg, False))
-                    trim(self.buf); continue
-                if line=="/stats":
-                    tot=len([m for m in self.buf if m[0]!="System"])
-                    mine=len([m for m in self.buf if m[0]==self.nick])
-                    msg = Text.assemble(
-                        "Sent ", (str(mine), "cyan"), 
-                        ", Recv ", (str(tot-mine), "magenta"), 
-                        ", Total ", (str(tot), "green"))
-                    self.buf.append(("System", msg, False))
-                    trim(self.buf); continue
-                if line=="/security":
-                    self.buf.append(("System", "=== SECURITY STATUS ===", False))
-                    
-                    if session_key.is_public_room(self.room):
-                        self.buf.append(("System", Text.assemble("🔓 PUBLIC ROOM - NO ENCRYPTION ", ("(insecure)", "red")), False))
-                        self.buf.append(("System", Text.assemble("• Messages are NOT encrypted ", ("(no protection)", "red")), False))
-                        self.buf.append(("System", Text.assemble("• Anyone can join and read messages ", ("(public access)", "red")), False))
-                        self.buf.append(("System", Text.assemble("• Do not share sensitive information ", ("(warning)", "red")), False))
-                        self.buf.append(("System", Text.assemble("• Use private rooms for secure communication ", ("(recommended)", "green")), False))
-                    else:
-                        self.buf.append(("System", Text.assemble("🔒 Base Encryption: AES-256-Fernet, PBKDF2-SHA256 (100k) ", ("(secure)", "green")), False))
-                        
-                        # Session key status
-                        current_key = session_key.get_session_key(self.room)
-                        if current_key:
-                            key_age = int(time.time() - session_key._active_sessions[self.room][1])
-                            rotation_in = session_key.SESSION_KEY_ROTATION_INTERVAL - key_age
-                            self.buf.append(("System", Text.assemble("🔑 Forward Secrecy: Active ", ("(enabled)", "green")), False))
-                            self.buf.append(("System", Text.assemble(
-                                "  • Session key age: ", (f"{key_age}s", "cyan"),
-                                " ", ("(fresh)" if key_age < 300 else "(rotating soon)", "green" if key_age < 300 else "yellow")), False))
-                            self.buf.append(("System", Text.assemble(
-                                "  • Next rotation in: ", (f"{rotation_in}s", "cyan"),
-                                " ", ("(pending)", "yellow")), False))
-                        else:
-                            self.buf.append(("System", Text.assemble("🔑 Forward Secrecy: Waiting for session key... ", ("(initializing)", "yellow")), False))
-                        
-                        # Room security
-                        self.buf.append(("System", Text.assemble("🏠 Room: ", (self.room, "cyan"), " ", ("(private)", "green")), False))
-                        self.buf.append(("System", Text.assemble("  • Double encryption: Room key + Session key ", ("(active)", "green")), False))
-                        self.buf.append(("System", Text.assemble("  • Perfect Forward Secrecy: Enabled ", ("(active)", "green")), False))
-                        self.buf.append(("System", Text.assemble(
-                            "  • Key rotation interval: ", 
-                            (f"{session_key.SESSION_KEY_ROTATION_INTERVAL}s", "cyan"),
-                            " ", ("(automatic)", "green")), False))
-                    
-                    # File transfer security
-                    self.buf.append(("System", "📁 File Transfer Security:", False))
-                    self.buf.append(("System", Text.assemble(
-                        "  • End-to-end encrypted chunks: ", 
-                        (f"{CHUNK_SIZE//1024}KB", "cyan"),
-                        " ", ("(optimal)", "green")), False))
-                    self.buf.append(("System", Text.assemble("  • SHA256 integrity verification ", ("(verified)", "green")), False))
-                    self.buf.append(("System", Text.assemble(
-                        "  • Max file size: ", 
-                        (f"{MAX_FILE_SIZE//1024//1024}MB", "cyan"),
-                        " ", ("(configured)", "green")), False))
-                    
-                    # System security
-                    self.buf.append(("System", "🛡️ System Security:", False))
-                    self.buf.append(("System", Text.assemble("  • Memory-only session keys ", ("(secure)", "green")), False))
-                    self.buf.append(("System", Text.assemble("  • Zero server knowledge ", ("(private)", "green")), False))
-                    if KEYRING_AVAILABLE:
-                        self.buf.append(("System", Text.assemble("  • Secure keyring available: ", ("Yes", "green"), " ", ("(protected)", "green")), False))
-                    else:
-                        self.buf.append(("System", Text.assemble("  • Secure keyring available: ", ("No", "red"), " ", ("(warning)", "red")), False))
-                    
-                    # Server info
-                    self.buf.append(("System", "🌐 Server:", False))
-                    if self.server == ENCHAT_NTFY:
-                        self.buf.append(("System", Text.assemble("  • Using dedicated Enchat server ", ("(recommended)", "green")), False))
-                    elif self.server == DEFAULT_NTFY:
-                        self.buf.append(("System", Text.assemble("  • Using public ntfy.sh server ", ("(public)", "yellow")), False))
-                    else:
-                        self.buf.append(("System", Text.assemble(
-                            "  • Using custom server: ", 
-                            (self.server, "cyan"), 
-                            " ", ("(self-hosted)", "yellow")), False))
-                    
-                    trim(self.buf)
-                    continue
-                if line=="/notifications":
-                    global notifications_enabled
-                    notifications_enabled = not notifications_enabled
-                    status = ("enabled", "green") if notifications_enabled else ("disabled", "red")
-                    msg = Text.assemble("📱 Notifications ", status)
-                    self.buf.append(("System", msg, False))
-                    trim(self.buf); continue
-                if line=="/files":
-                    if not available_files:
-                        msg = Text.assemble("📂 No files available for download ", ("(empty)", "yellow"))
-                        self.buf.append(("System", msg, False))
-                    else:
-                        msg = Text.assemble(
-                            "📂 AVAILABLE FILES (",
-                            (str(len(available_files)), "cyan"),
-                            ")")
-                        self.buf.append(("System", msg, False))
-                        for file_id, info in available_files.items():
-                            meta = info['metadata']
-                            sender = info['sender']
-                            if info['complete']:
-                                status = ("✅ Ready", "green")
-                            else:
-                                progress = f"📥 {info['chunks_received']}/{info['total_chunks']}"
-                                status = (progress, "yellow")
-                            msg = Text.assemble(
-                                f"ID: {file_id} - From: ", 
-                                (sender, "cyan"), 
-                                " - Status: ",
-                                status)
-                            self.buf.append(("System", msg, False))
-                    trim(self.buf); continue
-                if line.startswith("/download "):
-                    file_id = line[10:].strip()
-                    if not file_id:
-                        self.buf.append(("System", "❌ Usage: /download <file_id>", False))
-                        trim(self.buf); continue
-                    
-                    if file_id not in available_files:
-                        self.buf.append(("System", f"❌ File ID '{file_id}' not found. Use /files to list available files.", False))
-                        trim(self.buf); continue
-                    
-                    file_info = available_files[file_id]
-                    if not file_info['complete']:
-                        self.buf.append(("System", f"❌ File '{file_id}' is not complete yet ({file_info['chunks_received']}/{file_info['total_chunks']} chunks)", False))
-                        trim(self.buf); continue
-                    
-                    # Assemble and save file
-                    temp_path, error = assemble_file_from_chunks(file_id, self.f)
-                    if error:
-                        self.buf.append(("System", f"❌ Download failed: {error}", False))
-                        trim(self.buf); continue
-                    
-                    # Ensure downloads directory exists
-                    ensure_downloads_dir()
-                    
-                    # SECURITY: Sanitize filename to prevent directory traversal attacks
-                    raw_filename = file_info['metadata']['filename']
-                    filename = sanitize_filename(raw_filename, file_id)
-                    
-                    local_path = os.path.join(DOWNLOADS_DIR, filename)
-                    
-                    # SECURITY: Verify the resolved path is actually within downloads directory
-                    abs_downloads = os.path.abspath(DOWNLOADS_DIR)
-                    abs_local = os.path.abspath(local_path)
-                    if not abs_local.startswith(abs_downloads + os.sep) and abs_local != abs_downloads:
-                        self.buf.append(("System", f"❌ Security error: Invalid file path", False))
-                        trim(self.buf); continue
-                    
-                    # Handle file exists
-                    counter = 1
-                    original_path = local_path
-                    while os.path.exists(local_path):
-                        name, ext = os.path.splitext(filename)
-                        candidate_name = f"{name}_{counter}{ext}"
-                        local_path = os.path.join(DOWNLOADS_DIR, candidate_name)
-                        
-                        # SECURITY: Verify each candidate path is also safe
-                        abs_candidate = os.path.abspath(local_path)
-                        if not abs_candidate.startswith(abs_downloads + os.sep) and abs_candidate != abs_downloads:
-                            self.buf.append(("System", f"❌ Security error: Cannot create safe filename", False))
-                            trim(self.buf); continue
-                        counter += 1
-                    
-                    try:
-                        import shutil
-                        shutil.copy2(temp_path, local_path)
-                        # Clean up temp file
-                        os.remove(temp_path)
-                        
-                        size_mb = file_info['metadata']['size'] / (1024 * 1024)
-                        rel_path = os.path.relpath(local_path, os.path.dirname(__file__))
-                        
-                        msg = Text.assemble(
-                            ("✅ Downloaded: ", "bold green"),
-                            (os.path.basename(local_path), "cyan"),
-                            (" (", "dim"),
-                            (f"{size_mb:.1f}MB", "yellow"),
-                            (")", "dim")
-                        )
-                        self.buf.append(("System", msg, False))
-                        
-                        msg = Text.assemble(
-                            ("   📁 Saved to: ", "bold"),
-                            (rel_path, "cyan")
-                        )
-                        self.buf.append(("System", msg, False))
-                        
-                        # Remove from available files after download
-                        del available_files[file_id]
-                        del file_chunks[file_id]
-                        
-                    except Exception as e:
-                        self.buf.append(("System", f"❌ Save failed: {e}", False))
-                        # Clean up temp file on error
-                        try:
-                            os.remove(temp_path)
-                        except:
-                            pass
-                    
-                    trim(self.buf); continue
-                if line.startswith("/share "):
-                    filepath = line[7:].strip()
-                    if not filepath:
-                        self.buf.append(("System", "❌ Usage: /share <filepath>", False))
-                        trim(self.buf); continue
-                    
-                    # Expand home directory
-                    filepath = os.path.expanduser(filepath)
-                    msg = Text.assemble(
-                        ("🔍 Preparing to share: ", "bold"),
-                        (filepath, "cyan")
-                    )
-                    self.buf.append(("System", msg, False))
-                    
-                    # Split file into chunks and send
-                    metadata, chunks = split_file_to_chunks(filepath, self.f)
-                    if not metadata:
-                        self.buf.append(("System", f"❌ {chunks}", False))  # chunks contains error message
-                        trim(self.buf); continue
-                    
-                    filename = metadata['filename']
-                    file_size = metadata['size']
-                    total_chunks = metadata['total_chunks']
-                    file_id = metadata['file_id']
-                    
-                    # First send metadata
-                    enqueue_file_meta(self.room, self.nick, metadata, self.server, self.f)
-                    
-                    # Also add to own available files for testing/reference
-                    available_files[file_id] = {
-                        'metadata': metadata,
-                        'sender': f"{self.nick} (you)",
-                        'chunks_received': total_chunks,
-                        'total_chunks': total_chunks,
-                        'complete': True
-                    }
-                    file_chunks[file_id] = {i: chunks[i] for i in range(total_chunks)}
-                    
-                    size_mb = file_size / (1024 * 1024)
-                    msg = Text.assemble(
-                        ("📤 Sharing: ", "bold"),
-                        (filename, "cyan"),
-                        (" (", "dim"),
-                        (f"{size_mb:.1f}MB", "yellow"),
-                        (", ", "dim"),
-                        (f"{total_chunks} chunks", "yellow"),
-                        (")", "dim")
-                    )
-                    self.buf.append(("System", msg, False))
-                    
-                    msg = Text.assemble(
-                        ("   File ID: ", "bold"),
-                        (file_id, "magenta"),
-                        (" (also in your ", "dim"),
-                        ("/files", "cyan"),
-                        (" for reference)", "dim")
-                    )
-                    self.buf.append(("System", msg, False))
-                    
-                    # Send chunks with progress
-                    for i, chunk in enumerate(chunks):
-                        enqueue_file_chunk(self.room, self.nick, chunk, self.server, self.f)
-                        # Show progress every 10% or for small files every chunk
-                        if total_chunks <= 10 or (i + 1) % max(1, total_chunks // 10) == 0 or (i + 1) == total_chunks:
-                            progress = int(((i + 1) / total_chunks) * 100)
-                            msg = Text.assemble(
-                                ("📤 Upload progress: ", "bold"),
-                                (f"{progress}%", "green"),
-                                (" (", "dim"),
-                                (f"{i + 1}/{total_chunks}", "yellow"),
-                                (")", "dim")
-                            )
-                            self.buf.append(("System", msg, False))
-                    
-                    msg = Text.assemble(
-                        ("✅ Upload complete: ", "bold green"),
-                        (filename, "cyan")
-                    )
-                    self.buf.append(("System", msg, False))
-                    trim(self.buf); continue
-                if line.startswith("/server"):
-                    try:
-                        # Test server connectivity
-                        test_resp = requests.get(f"{self.server}/v1/health", timeout=5)
-                        status = "🟢 Online" if test_resp.status_code == 200 else f"🟡 Status {test_resp.status_code}"
-                    except Exception:
-                        status = "🔴 Offline/Unreachable"
-                    
-                    self.buf.append(("System", f"=== SERVER INFO ===", False))
-                    self.buf.append(("System", f"URL: {self.server}", False))
-                    self.buf.append(("System", f"Status: {status}", False))
-                    self.buf.append(("System", f"Room: {self.room}", False))
-                    trim(self.buf)
-                    continue
-                if line.startswith("/"):
-                    self.buf.append(("System",f"Unknown command {line}",False))
-                    trim(self.buf); continue
-                # ─ message ─
-                if len(line)>MAX_MSG_LEN:
-                    self.buf.append(("System","❌ too long",False)); continue
-                enqueue_msg(self.room,self.nick,line,self.server,self.f)
-                self.buf.append((self.nick,line,True))
-                trim(self.buf)
 
         stop.set(); enqueue_sys(self.room,self.nick,"left",self.server,self.f)
 
