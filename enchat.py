@@ -41,11 +41,14 @@ DEFAULT_NTFY= "https://ntfy.sh"
 ENCHAT_NTFY = "https://enchat.sudosallie.com"
 MAX_MSG_LEN = 500
 PING_INTERVAL = 30
+MOBILE_PING_INTERVAL = 60  # Langere ping interval voor mobiel
 MAX_RETRIES = 3
 RETRY_BASE  = 1
 MAX_SEEN    = 500
 BUFFER_LIMIT= 500
+MOBILE_BUFFER_LIMIT = 250  # Kleinere buffer voor mobiel
 TRIM_STEP   = 100
+MOBILE_TRIM_STEP = 50  # Kleinere trim stap voor mobiel
 
 # File transfer constants - CONFIGURABLE
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB (can be increased to 10MB, 25MB, etc.)
@@ -1235,25 +1238,46 @@ def outbox_worker(stop_evt:threading.Event):
 
 # ── SSE listener ──────────────────────────────────────────────────────
 def trim(buf): 
-    if len(buf)>BUFFER_LIMIT: del buf[:TRIM_STEP]
+    if len(buf) > (MOBILE_BUFFER_LIMIT if getattr(trim, 'is_mobile', False) else BUFFER_LIMIT):
+        del buf[:MOBILE_TRIM_STEP if getattr(trim, 'is_mobile', False) else TRIM_STEP]
 
 def listener(room,nick,f,server,buf,stop):
     url=f"{server}/{room}/raw?x-sse=true&since=-30m&poll=65"
     headers={"Accept":"text/event-stream","Cache-Control":"no-cache"}
-    seen:set[str]=set(); join_ts=int(time.time())
+    seen:set[str]=set()
+    join_ts=int(time.time())
     room_participants.add(nick)
     is_public = session_key.is_public_room(room)
+    is_mobile = getattr(listener, 'is_mobile', False)
+    last_activity = time.time()
     
     with requests.Session() as sess:
         while not stop.is_set():
             try:
+                # Adaptieve poll interval voor mobiel
+                if is_mobile:
+                    current_time = time.time()
+                    if current_time - last_activity > 300:  # 5 minuten inactief
+                        poll_interval = 180  # 3 minuten poll voor inactieve mobiel
+                    else:
+                        poll_interval = 90  # 1.5 minuten poll voor actieve mobiel
+                else:
+                    poll_interval = 65  # Normale desktop poll
+                
+                url = f"{server}/{room}/raw?x-sse=true&since=-30m&poll={poll_interval}"
+                
                 with sess.get(url,stream=True,timeout=(5,None),headers=headers) as resp:
                     for raw in resp.iter_lines(decode_unicode=True,chunk_size=1):
                         if stop.is_set(): return
                         if not raw: continue
+                        
+                        last_activity = time.time()  # Update laatste activiteit
+                        
                         h=hashlib.sha256(raw.encode()).hexdigest()
                         if h in seen: continue
-                        seen.add(h); seen=set(list(seen)[-MAX_SEEN:])
+                        seen.add(h)
+                        # Kleinere seen set voor mobiel
+                        seen=set(list(seen)[-(MAX_SEEN//2 if is_mobile else MAX_SEEN):])
                         
                         # Skip session key updates for public rooms
                         if not is_public and raw.startswith("SESSIONKEY:"):
@@ -1387,7 +1411,11 @@ class ChatUI:
         self.cached_input_text = ""  # Track input text for cache invalidation
         self.cached_body = None    # Cache for body panel
         self.cached_body_len = 0   # Track message count for body cache
-        self.is_mobile = False     # Track mobile state
+        self.is_mobile = self._detect_is_mobile()  # Detect mobile at startup
+        
+        # Propagate mobile status to other components
+        trim.is_mobile = self.is_mobile
+        listener.is_mobile = self.is_mobile
         
         # Show warning for public rooms
         if session_key.is_public_room(room):
@@ -1395,6 +1423,15 @@ class ChatUI:
             if info:
                 self.buf.append(("System", info["warning"], False))
                 self.buf.append(("System", "Type /security for more information", False))
+
+    def _detect_is_mobile(self):
+        """Detect if we're running on a mobile/narrow terminal"""
+        try:
+            import shutil
+            width = shutil.get_terminal_size().columns
+            return width < 80
+        except:
+            return False  # Default to desktop on error
 
     def _detect_terminal_size(self):
         """Get current terminal size with fallback"""
@@ -1404,6 +1441,16 @@ class ChatUI:
             return size.lines, size.columns
         except:
             return 24, 80  # Fallback size
+
+    def _update_mobile_status(self):
+        """Update mobile status and propagate changes"""
+        new_is_mobile = self._detect_is_mobile()
+        if new_is_mobile != self.is_mobile:
+            self.is_mobile = new_is_mobile
+            trim.is_mobile = self.is_mobile
+            listener.is_mobile = self.is_mobile
+            return True
+        return False
 
     def _should_redraw_header(self):
         """Check if header needs to be redrawn"""
@@ -1520,7 +1567,16 @@ class ChatUI:
     # ─ main loop ─
     def run(self):
         stop=threading.Event()
-        threading.Thread(target=listener,args=(self.room,self.nick,self.f,self.server,self.buf,stop),daemon=True).start()
+        
+        # Initial mobile detection is already done in __init__
+        
+        # Start threads
+        listener_thread = threading.Thread(
+            target=listener,
+            args=(self.room,self.nick,self.f,self.server,self.buf,stop),
+            daemon=True
+        )
+        listener_thread.start()
         start_char_thread()
 
         self.buf.append(("System",f"Joined '{self.room}'",False))
@@ -1529,13 +1585,9 @@ class ChatUI:
         def pinger():
             while not stop.is_set():
                 enqueue_sys(self.room,self.nick,"ping",self.server,self.f)
-                time.sleep(PING_INTERVAL)
+                time.sleep(MOBILE_PING_INTERVAL if self.is_mobile else PING_INTERVAL)
         threading.Thread(target=pinger,daemon=True).start()
 
-        # Initial terminal size check
-        _, width = self._detect_terminal_size()
-        self.is_mobile = width < 80
-        
         # Adjust refresh rate based on device type
         refresh_rate = 1 if self.is_mobile else 5  # Lower refresh rate for mobile
         update_interval = 0.5 if self.is_mobile else 0.1  # Longer update interval for mobile
@@ -1569,7 +1621,11 @@ class ChatUI:
                         current_size_tuple = (current_size.lines, current_size.columns)
                         if current_size_tuple != self.last_terminal_size:
                             self.last_terminal_size = current_size_tuple
-                            self.is_mobile = current_size.columns < 80
+                            if self._update_mobile_status():  # Update mobile status
+                                # Update refresh rates if mobile status changed
+                                refresh_rate = 1 if self.is_mobile else 5
+                                update_interval = 0.5 if self.is_mobile else 0.1
+                                size_check_interval = 2.0 if self.is_mobile else 0.5
                             self.redraw = True
                         self.last_size_check = current_time
                     except:
