@@ -41,14 +41,14 @@ DEFAULT_NTFY= "https://ntfy.sh"
 ENCHAT_NTFY = "https://enchat.sudosallie.com"
 MAX_MSG_LEN = 500
 PING_INTERVAL = 30
-MOBILE_PING_INTERVAL = 60  # Langere ping interval voor mobiel
+MOBILE_PING_INTERVAL = 60  # Extended ping interval for mobile
 MAX_RETRIES = 3
 RETRY_BASE  = 1
 MAX_SEEN    = 500
 BUFFER_LIMIT= 500
-MOBILE_BUFFER_LIMIT = 250  # Kleinere buffer voor mobiel
+MOBILE_BUFFER_LIMIT = 250  # Reduced buffer size for mobile
 TRIM_STEP   = 100
-MOBILE_TRIM_STEP = 50  # Kleinere trim stap voor mobiel
+MOBILE_TRIM_STEP = 50  # Reduced trim step for mobile
 
 # File transfer constants - CONFIGURABLE
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5MB (can be increased to 10MB, 25MB, etc.)
@@ -1254,7 +1254,7 @@ def listener(room,nick,f,server,buf,stop):
     with requests.Session() as sess:
         while not stop.is_set():
             try:
-                # Adaptieve poll interval voor mobiel
+                # Adaptive poll interval for mobile
                 if is_mobile:
                     current_time = time.time()
                     if current_time - last_activity > 300:  # 5 minuten inactief
@@ -1276,7 +1276,7 @@ def listener(room,nick,f,server,buf,stop):
                         h=hashlib.sha256(raw.encode()).hexdigest()
                         if h in seen: continue
                         seen.add(h)
-                        # Kleinere seen set voor mobiel
+                        # Reduced seen set size for mobile
                         seen=set(list(seen)[-(MAX_SEEN//2 if is_mobile else MAX_SEEN):])
                         
                         # Skip session key updates for public rooms
