@@ -4,7 +4,6 @@ import shutil
 import random
 import json
 import shlex
-import sys
 
 from rich.text import Text
 from rich.panel import Panel
@@ -12,7 +11,7 @@ from rich.markup import escape
 
 from . import state, constants, session_key, file_transfer, link_sharing
 from .utils import trim
-from .network import enqueue_msg, enqueue_sys
+from .network import enqueue_sys
 from .clipboard import copy_to_clipboard
 
 # In-memory state for lotteries, keyed by room name
@@ -136,7 +135,7 @@ def handle_command(line: str, room: str, nick: str, server: str, f, buf: list, s
             if not lottery:
                 buf.append(("System", "[bold red]There is no active lottery to enter.[/]", False))
             elif nick in lottery["participants"]:
-                buf.append(("System", f"[yellow]You have already entered the lottery.[/]", False))
+                buf.append(("System", "[yellow]You have already entered the lottery.[/]", False))
             else:
                 enqueue_sys(room, nick, "LOTTERY_ENTER", server, f)
         

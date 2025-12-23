@@ -1,13 +1,12 @@
 import os
 import hashlib
 import uuid
-import json
 
 from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
-from . import state, constants, notifications, crypto, session_key
+from . import state, constants, notifications
 from .state import outbox_queue
 
 def ensure_file_dir():
@@ -167,7 +166,7 @@ def _check_file_completion(file_id, buf):
         filename_escaped = escape(file_info['metadata']['filename'])
         
         panel_text = f"• [bold]File:[/bold] [yellow]{filename_escaped}[/]\n"
-        panel_text += f"• [bold]Status:[/bold] [green]100% Complete[/]\n\n"
+        panel_text += "• [bold]Status:[/bold] [green]100% Complete[/]\n\n"
         panel_text += f"Ready to be saved with: [bold cyan]/download {file_id}[/]"
 
         panel = Panel(

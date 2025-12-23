@@ -1,20 +1,15 @@
 import os
 import sys
 import subprocess
-import glob
-import tempfile
-import platform
 import gc
-import ctypes
 import secrets
-from typing import Tuple, Optional, Set
+from typing import Tuple, Optional
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
 from rich.prompt import Prompt
 
 from .config import wipe_keychain_entries
-from . import state
 
 console = Console()
 

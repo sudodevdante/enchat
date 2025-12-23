@@ -1,6 +1,4 @@
-import os
 import time
-import base64
 from cryptography.fernet import Fernet
 
 # In-memory storage for session keys: {room: (key, creation_timestamp)}

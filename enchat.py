@@ -8,7 +8,6 @@ import os
 import signal
 import sys
 import threading
-import time
 from getpass import getpass
 from typing import List, Tuple
 
@@ -17,7 +16,6 @@ from rich.console import Console
 from rich.prompt import Prompt
 from rich.panel import Panel
 from rich.text import Text
-from rich.align import Align
 
 # Local modules from enchat_lib
 from enchat_lib import (
@@ -135,7 +133,10 @@ def start_chat(room: str, nick: str, secret: str, server: str, buf: List[Tuple[s
     # Register signal handlers for Ctrl+C and terminal close
     signal.signal(signal.SIGINT, quit_handler)
     signal.signal(signal.SIGTERM, quit_handler)
-    signal.signal(signal.SIGHUP, quit_handler)
+    
+    # The SIGHUB method is not compatible with Windows
+    if os.name != "nt":
+        signal.signal(signal.SIGHUP, quit_handler)
     
     try:
         chat_ui.run()
@@ -277,7 +278,7 @@ def main():
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
     # Default command (run with existing config)
-    run_parser = subparsers.add_parser('run', help='Run Enchat with saved settings (default action)')
+    subparsers.add_parser('run', help='Run Enchat with saved settings (default action)')
     
     # Join command
     join_parser = subparsers.add_parser('join', help='Join a new or existing private room.')
@@ -303,9 +304,9 @@ def main():
     join_link_parser.add_argument('link_url', help='The full enchat share link.')
 
     # Maintenance commands
-    reset_parser = subparsers.add_parser('reset', help='Clear saved room settings and keys.')
-    kill_parser = subparsers.add_parser('kill', help='Securely wipe ALL Enchat data.')
-    version_parser = subparsers.add_parser('version', help='Show version info.')
+    subparsers.add_parser('reset', help='Clear saved room settings and keys.')
+    subparsers.add_parser('kill', help='Securely wipe ALL Enchat data.')
+    subparsers.add_parser('version', help='Show version info.')
 
     # If no command is given, default to 'run'
     args = parser.parse_args(sys.argv[1:] if sys.argv[1:] else ['run'])
@@ -358,7 +359,7 @@ def main():
         room, nick, secret, server = first_run(args)
 
     if room and nick and server:
-        start_chat(room, nick, secret, server, [], is_tor=args.tor)
+        start_chat(room, nick, secret, server, [], is_tor=args.tor) # type: ignore
 
 if __name__ == "__main__":
     try:

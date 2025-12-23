@@ -7,7 +7,8 @@ from . import state
 
 def _posix():
     """POSIX implementation for non-blocking character input."""
-    import termios, tty
+    import termios
+    import tty
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
