@@ -220,4 +220,4 @@ Redistribution, modification, decompilation, or any other use is also prohibited
 
 THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
 
-For commercial use or enterprise licensing, please contact info@enchat.io for pricing and terms. 
+For commercial use or enterprise licensing, please contact info@enchat.io for pricing and terms. # enchat-v2
