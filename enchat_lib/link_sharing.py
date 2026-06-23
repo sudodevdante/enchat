@@ -1,7 +1,7 @@
 """
 Handles the creation and consumption of temporary, one-time-use links for sharing room credentials.
 """
-
+from __future__ import annotations
 import os
 import base64
 from cryptography.fernet import Fernet
