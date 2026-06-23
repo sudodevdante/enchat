@@ -132,10 +132,11 @@ def start_chat(room: str, nick: str, secret: str, server: str, buf: List[Tuple[s
         # This will trigger the exit condition in the main loop
         SHUTDOWN_EVENT.set()
 
-    # Register signal handlers for Ctrl+C and terminal close
-    signal.signal(signal.SIGINT, quit_handler)
-    signal.signal(signal.SIGTERM, quit_handler)
-    signal.signal(signal.SIGHUP, quit_handler)
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, quit_handler)   # Ctrl+C
+    signal.signal(signal.SIGTERM, quit_handler)  # Termination signal
+    if hasattr(signal, 'SIGHUP'):                # Unix only (not available on Windows)
+        signal.signal(signal.SIGHUP, quit_handler)
     
     try:
         chat_ui.run()
@@ -365,4 +366,4 @@ if __name__ == "__main__":
         main()
     except (KeyboardInterrupt, EOFError):
         console.print("\n[yellow]Exited gracefully.[/]")
-        sys.exit(0) 
+        sys.exit(0)
