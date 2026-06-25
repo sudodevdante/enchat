@@ -2,12 +2,14 @@ import os
 import hashlib
 import uuid
 import json
+import math
+import re
 
 from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
-from . import state, constants, notifications, crypto, session_key
+from . import state, constants, notifications, crypto
 from .state import outbox_queue
 
 def ensure_file_dir():
@@ -85,6 +87,8 @@ def split_file_to_chunks(filepath, f_cipher):
 
 def handle_file_metadata(metadata, sender, buf):
     """Handle incoming file metadata, resilient to out-of-order messages."""
+    if not _valid_metadata(metadata):
+        return
     file_id = metadata['file_id']
     
     # If this is the first we're hearing of this file, create its state.
@@ -125,6 +129,8 @@ def handle_file_metadata(metadata, sender, buf):
 
 def handle_file_chunk(chunk_data, sender, buf):
     """Handle incoming file chunk, resilient to out-of-order messages."""
+    if not _valid_chunk(chunk_data):
+        return
     file_id = chunk_data['file_id']
     chunk_num = chunk_data['chunk_num']
 
@@ -144,6 +150,10 @@ def handle_file_chunk(chunk_data, sender, buf):
         return
 
     # Store the chunk and update the received count.
+    total_chunks = state.available_files[file_id].get('total_chunks', -1)
+    if total_chunks >= 0 and chunk_num >= total_chunks:
+        return
+
     if chunk_num not in state.file_chunks[file_id]:
         state.file_chunks[file_id][chunk_num] = chunk_data
         state.available_files[file_id]['chunks_received'] = len(state.file_chunks[file_id])
@@ -162,7 +172,7 @@ def _check_file_completion(file_id, buf):
     received = file_info['chunks_received']
     total = file_info['total_chunks']
     
-    if total > 0 and received == total:
+    if total >= 0 and received == total:
         file_info['complete'] = True
         filename_escaped = escape(file_info['metadata']['filename'])
         
@@ -189,7 +199,9 @@ def assemble_file_from_chunks(file_id, f_cipher):
     chunks_dict = state.file_chunks[file_id]
     
     try:
-        temp_path = os.path.join(constants.FILE_TEMP_DIR, f"{file_id}_{metadata['filename']}")
+        safe_filename = sanitize_filename(metadata['filename'], file_id)
+        safe_filename = safe_filename[:240]
+        temp_path = os.path.join(constants.FILE_TEMP_DIR, f"{file_id}_{safe_filename}")
         file_hash = hashlib.sha256()
         
         if metadata['total_chunks'] == 0:
@@ -220,3 +232,41 @@ def enqueue_file_transfer(room, nick, metadata, chunks, server, f):
         "chunks": chunks
     }
     outbox_queue.put(("FILE_TRANSFER", room, nick, payload, server, f))
+
+
+def _valid_metadata(metadata) -> bool:
+    """Reject malformed authenticated payloads before allocating transfer state."""
+    if not isinstance(metadata, dict):
+        return False
+    file_id = metadata.get("file_id")
+    filename = metadata.get("filename")
+    size = metadata.get("size")
+    total_chunks = metadata.get("total_chunks")
+    digest = metadata.get("hash")
+    if not isinstance(file_id, str) or not re.fullmatch(r"[0-9a-fA-F]{8}", file_id):
+        return False
+    if not isinstance(filename, str) or not filename or len(filename) > 255:
+        return False
+    if not isinstance(size, int) or isinstance(size, bool) or not 0 <= size <= constants.MAX_FILE_SIZE:
+        return False
+    expected_chunks = math.ceil(size / constants.CHUNK_SIZE)
+    if not isinstance(total_chunks, int) or isinstance(total_chunks, bool) or total_chunks != expected_chunks:
+        return False
+    return isinstance(digest, str) and re.fullmatch(r"[0-9a-fA-F]{64}", digest) is not None
+
+
+def _valid_chunk(chunk_data) -> bool:
+    if not isinstance(chunk_data, dict):
+        return False
+    file_id = chunk_data.get("file_id")
+    chunk_num = chunk_data.get("chunk_num")
+    data = chunk_data.get("data")
+    return (
+        isinstance(file_id, str)
+        and re.fullmatch(r"[0-9a-fA-F]{8}", file_id) is not None
+        and isinstance(chunk_num, int)
+        and not isinstance(chunk_num, bool)
+        and 0 <= chunk_num < math.ceil(constants.MAX_FILE_SIZE / constants.CHUNK_SIZE)
+        and isinstance(data, str)
+        and len(data) <= (constants.CHUNK_SIZE * 2)
+    )

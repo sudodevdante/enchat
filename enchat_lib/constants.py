@@ -9,7 +9,8 @@ except ImportError:
 
 CONF_FILE = os.path.expanduser("~/.enchat.conf")
 DEFAULT_NTFY = "https://ntfy.sh"
-ENCHAT_NTFY = "https://enchat.sudosallie.com"
+ENCHAT_NTFY = "https://enchat.salvc.com"
+LEGACY_ENCHAT_NTFY = "https://enchat.sudosallie.com"
 MAX_MSG_LEN = 500
 PING_INTERVAL = 25
 MAX_RETRIES = 3
@@ -25,7 +26,7 @@ FILE_TEMP_DIR = os.path.join(tempfile.gettempdir(), "enchat_files")
 # and the enchat_lib directory.
 _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOWNLOADS_DIR = os.path.join(_project_root, "downloads")
-VERSION = "2.0"
+VERSION = "2.3.0"
 
 KEYRING_SERVICE_NAME = "enchat"
 

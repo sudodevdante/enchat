@@ -1,282 +1,550 @@
+"""Textual user interface for Enchat.
+
+The UI deliberately sits on top of the existing network and command modules. This
+keeps transport and encryption behaviour unchanged while giving the chat a
+responsive, keyboard-first interface.
+"""
+
+from __future__ import annotations
+
 import threading
 import time
-import queue
-import shutil
-from io import StringIO
+import textwrap
+from datetime import datetime
+from typing import List, Optional
 
-from rich.layout import Layout
-from rich.live import Live
+from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
-from rich.align import Align
-from rich.console import Group, Console as RichConsole
+from textual import events, on
+from textual.app import App, ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
+from textual.screen import ModalScreen, Screen
+from textual.suggester import SuggestFromList
+from textual.widgets import Input, OptionList, RichLog, Static
+from textual.widgets.option_list import Option
 
-from . import state, constants, network, commands
-from .utils import trim
-from .input import start_char_thread
+from . import commands, constants, network, state
+
+
+COMMANDS = [
+    "/help",
+    "/who",
+    "/share-room",
+    "/copy-link",
+    "/share ",
+    "/files",
+    "/download ",
+    "/security",
+    "/server",
+    "/notifications",
+    "/clear",
+    "/exit",
+]
+
+
+class ActionPalette(ModalScreen[str]):
+    """Small keyboard-first action launcher."""
+
+    DEFAULT_CSS = """
+    ActionPalette {
+        align: center middle;
+        background: #02090f 70%;
+    }
+
+    #palette {
+        width: 58;
+        height: auto;
+        max-height: 20;
+        padding: 1 2;
+        background: #071521;
+        border: solid #405568;
+    }
+
+    #palette-title {
+        height: 2;
+        color: #54dff4;
+        text-style: bold;
+    }
+
+    #palette-options {
+        height: auto;
+        max-height: 14;
+        background: #071521;
+        border: none;
+    }
+
+    #palette-options > .option-list--option-highlighted {
+        background: #54dff4;
+        color: #03101a;
+        text-style: bold;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "dismiss_palette", "Close", show=False)]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="palette"):
+            yield Static("Actions", id="palette-title")
+            yield OptionList(
+                Option("Invite people", id="invite"),
+                Option("Share a file", id="share"),
+                Option("View members", id="members"),
+                Option("Security details", id="security"),
+                Option("Help and shortcuts", id="help"),
+                id="palette-options",
+            )
+
+    def on_mount(self) -> None:
+        self.query_one(OptionList).focus()
+
+    @on(OptionList.OptionSelected)
+    def choose_action(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(str(event.option.id))
+
+    def action_dismiss_palette(self) -> None:
+        self.dismiss("")
+
+
+class EnchatApp(App[None]):
+    """Responsive chat application backed by an existing :class:`ChatUI`."""
+
+    TITLE = "Enchat"
+    CSS = """
+    $base: #050f18;
+    $surface: #071521;
+    $line: #263a4b;
+    $muted: #8292a8;
+    $text: #f2eee7;
+    $cyan: #54dff4;
+    $green: #62e889;
+
+    Screen {
+        background: $base;
+        color: $text;
+        layout: vertical;
+    }
+
+    #topbar {
+        height: 3;
+        padding: 1 2 0 2;
+        border-bottom: solid $line;
+        background: $base;
+    }
+
+    #main {
+        height: 1fr;
+        background: $base;
+    }
+
+    #conversation {
+        width: 1fr;
+        height: 1fr;
+        background: $base;
+        padding: 1 2 0 2;
+        scrollbar-color: #405568;
+        scrollbar-background: $base;
+        scrollbar-size: 1 1;
+    }
+
+    #members {
+        width: 31;
+        min-width: 25;
+        height: 1fr;
+        padding: 1 2;
+        border-left: solid $line;
+        background: $base;
+        color: $text;
+    }
+
+    #members.hidden {
+        display: none;
+    }
+
+    #composer-wrap {
+        height: 5;
+        padding: 0 2;
+        background: $base;
+    }
+
+    #composer {
+        height: 3;
+        padding: 0 1;
+        background: $base;
+        border: solid #405568;
+        color: $text;
+    }
+
+    #composer:focus {
+        border: solid $cyan;
+    }
+
+    #shortcuts {
+        height: 2;
+        padding: 0 2;
+        color: $muted;
+        background: $base;
+        border-top: solid $line;
+    }
+
+    .shortcut {
+        color: $cyan;
+        text-style: bold;
+    }
+    """
+
+    BINDINGS = [
+        Binding("ctrl+k", "open_actions", "Actions", show=False, priority=True),
+        Binding("ctrl+m", "toggle_members", "Members", show=False, priority=True),
+        Binding("f1", "show_help", "Help", show=False, priority=True),
+        Binding("ctrl+q", "leave", "Leave", show=False, priority=True),
+    ]
+
+    def __init__(self, chat: "ChatUI", network_enabled: bool = True) -> None:
+        super().__init__()
+        self.chat = chat
+        self.network_enabled = network_enabled
+        self._rendered_count = 0
+        self._message_times: List[str] = []
+        self._members_requested = True
+        self._presence_signature = None
+        self._status_signature = None
+        self._stop_evt = threading.Event()
+        self._chat_screen: Optional[Screen] = None
+
+    def compose(self) -> ComposeResult:
+        yield Static(self._header_text(), id="topbar")
+        with Horizontal(id="main"):
+            yield RichLog(id="conversation", markup=True, wrap=True, auto_scroll=True)
+            yield Static(id="members")
+        with Vertical(id="composer-wrap"):
+            yield Input(
+                placeholder=f"Message #{self.chat.room_label}",
+                id="composer",
+                max_length=constants.MAX_MSG_LEN,
+                suggester=SuggestFromList(COMMANDS, case_sensitive=False),
+            )
+        yield Static(self._shortcut_text(), id="shortcuts")
+
+    def on_mount(self) -> None:
+        self._chat_screen = self.screen
+        state.room_participants[self.chat.nick] = time.time()
+        self._query_chat("#composer", Input).focus()
+        # Poll only the shared message buffer at a low cost. Presence has its own
+        # slower timer and only redraws when the participant set changes.
+        self.set_interval(0.10, self._sync_view)
+        self.set_interval(1.0, self._sync_presence)
+        self.set_interval(0.5, self._sync_status)
+
+        if self.network_enabled:
+            threading.Thread(
+                target=network.listener,
+                args=(
+                    self.chat.room,
+                    self.chat.nick,
+                    self.chat.fernet,
+                    self.chat.server,
+                    self.chat.buf,
+                    self._stop_evt,
+                    self.chat.shutdown_event,
+                ),
+                daemon=True,
+            ).start()
+            threading.Thread(target=self.chat._reaper, args=(self._stop_evt,), daemon=True).start()
+            threading.Thread(target=self._pinger, daemon=True).start()
+            self.chat.buf.append(("System", f"Joined '{self.chat.room_label}'", False))
+            network.enqueue_sys(
+                self.chat.room, self.chat.nick, "joined", self.chat.server, self.chat.fernet
+            )
+
+        self._sync_view()
+        self._sync_presence(force=True)
+        self._sync_status(force=True)
+
+    def on_unmount(self) -> None:
+        self._stop_evt.set()
+
+    def _pinger(self) -> None:
+        while not self._stop_evt.is_set() and not self.chat.shutdown_event.is_set():
+            network.enqueue_sys(
+                self.chat.room, self.chat.nick, "ping", self.chat.server, self.chat.fernet
+            )
+            self._stop_evt.wait(constants.PING_INTERVAL)
+
+    def _header_text(self) -> Text:
+        text = Text()
+        text.append("ENCHAT", style="bold #54dff4")
+        text.append(f"   │   #{self.chat.room_label}", style="bold #f2eee7")
+        text.append("   │   encrypted", style="#62e889")
+        if self.chat.is_tor:
+            text.append("   │   TOR", style="bold #c59cff")
+        status = state.relay_status
+        status_style = {
+            "connected": "#62e889",
+            "connecting": "#f2c14e",
+            "offline": "bold #ff6b6b",
+        }.get(status, "#8292a8")
+        text.append(f"   │   {status}", style=status_style)
+        return text
+
+    @staticmethod
+    def _shortcut_text() -> Text:
+        text = Text()
+        for key, label in (
+            ("Ctrl+K", "actions"),
+            ("Ctrl+M", "members"),
+            ("/", "commands"),
+            ("F1", "help"),
+        ):
+            if text:
+                text.append("     ")
+            text.append(key, style="bold #54dff4")
+            text.append(f" {label}", style="#8292a8")
+        return text
+
+    def _sync_view(self) -> None:
+        if self.chat.shutdown_event.is_set():
+            self.exit()
+            return
+
+        try:
+            log = self._query_chat("#conversation", RichLog)
+        except NoMatches:
+            # The periodic refresh can race with screen teardown in Textual.
+            return
+        if len(self.chat.buf) < self._rendered_count:
+            log.clear()
+            self._rendered_count = 0
+            self._message_times.clear()
+
+        while self._rendered_count < len(self.chat.buf):
+            entry = self.chat.buf[self._rendered_count]
+            self._message_times.append(datetime.now().strftime("%H:%M"))
+            log.write(self._render_message(entry, self._message_times[-1]))
+            if entry[0] != "System":
+                log.write(Text(""))
+            self._rendered_count += 1
+
+    def _active_participant_names(self) -> tuple:
+        now = time.time()
+        names = {
+            name
+            for name, seen in state.room_participants.items()
+            if now - seen <= constants.USER_TIMEOUT
+        }
+        names.add(self.chat.nick)
+        return tuple(sorted(names, key=lambda value: (value == self.chat.nick, value.lower())))
+
+    def _sync_presence(self, force: bool = False) -> None:
+        signature = self._active_participant_names()
+        if not force and signature == self._presence_signature:
+            return
+        self._presence_signature = signature
+        try:
+            self._query_chat("#members", Static).update(self._members_text(signature))
+        except NoMatches:
+            return
+
+    def _sync_status(self, force: bool = False) -> None:
+        signature = (state.relay_status, state.relay_error)
+        if not force and signature == self._status_signature:
+            return
+        self._status_signature = signature
+        try:
+            self._query_chat("#topbar", Static).update(self._header_text())
+        except NoMatches:
+            return
+
+    def _query_chat(self, selector: str, widget_type):
+        """Query the base chat screen even while a modal is open."""
+        screen = self._chat_screen or self.screen
+        return screen.query_one(selector, widget_type)
+
+    def _render_message(self, entry: tuple, stamp: str):
+        sender, content, own = entry[0], entry[1], bool(entry[2])
+        if isinstance(content, Panel):
+            return content
+
+        if sender == "System":
+            line = Text(f"{stamp}    →  ", style="#8292a8")
+            if isinstance(content, Text):
+                line.append_text(content)
+            else:
+                line.append(Text.from_markup(str(content), style="#8292a8"))
+            return line
+
+        label = "You" if own else sender
+        line = Text(f"{stamp}    ", style="#8292a8")
+        line.append(label, style="bold #54dff4")
+        line.append("\n         ")
+        if isinstance(content, Text):
+            line.append_text(content)
+        else:
+            wrapped = textwrap.fill(
+                str(content),
+                width=64,
+                subsequent_indent="         ",
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+            line.append(wrapped, style="#f2eee7")
+        line.append("\n\n")
+        return line
+
+    def _members_text(self, names: Optional[tuple] = None) -> Group:
+        names = names or self._active_participant_names()
+        rows = [Text(f"Participants ({len(names)})", style="bold #54dff4"), Text("")]
+        for name in names:
+            label = "You" if name == self.chat.nick else name
+            row = Text()
+            row.append(label, style="bold #54dff4")
+            row.append("  •", style="#62e889")
+            row.append(" online", style="#66788d")
+            rows.append(row)
+            rows.append(Text(""))
+        return Group(*rows)
+
+    @on(Input.Submitted, "#composer")
+    def submit_message(self, event: Input.Submitted) -> None:
+        value = event.value.strip()
+        event.input.value = ""
+        if not value:
+            return
+        self._handle_line(value)
+
+    def _handle_line(self, line: str) -> None:
+        if line.startswith("/"):
+            result = commands.handle_command(
+                line,
+                self.chat.room,
+                self.chat.nick,
+                self.chat.server,
+                self.chat.fernet,
+                self.chat.buf,
+                self.chat.secret,
+                self.chat.is_public,
+                self.chat.is_tor,
+            )
+            if result == "exit":
+                self.action_leave()
+        else:
+            if self.network_enabled:
+                network.enqueue_msg(
+                    self.chat.room,
+                    self.chat.nick,
+                    line,
+                    self.chat.server,
+                    self.chat.fernet,
+                )
+            self.chat.buf.append((self.chat.nick, line, True, False))
+        self._sync_view()
+
+    def action_open_actions(self) -> None:
+        self.push_screen(ActionPalette(), self._run_palette_action)
+
+    def _run_palette_action(self, action: Optional[str]) -> None:
+        if action == "invite":
+            self._handle_line("/share-room")
+        elif action == "share":
+            composer = self._query_chat("#composer", Input)
+            composer.value = "/share "
+            composer.cursor_position = len(composer.value)
+            composer.focus()
+        elif action == "members":
+            self.action_toggle_members()
+        elif action == "security":
+            self._handle_line("/security")
+        elif action == "help":
+            self._handle_line("/help")
+
+    def action_toggle_members(self) -> None:
+        self._members_requested = not self._members_requested
+        self._apply_members_visibility()
+
+    def action_show_help(self) -> None:
+        self._handle_line("/help")
+
+    def action_leave(self) -> None:
+        self.chat.shutdown_event.set()
+        self.exit()
+
+    def _apply_members_visibility(self) -> None:
+        members = self._query_chat("#members", Static)
+        should_show = self._members_requested and self.size.width >= 105
+        members.set_class(not should_show, "hidden")
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._apply_members_visibility()
+
 
 class ChatUI:
-    def __init__(self, room, nick, server, f, buf, secret, is_public=False, is_tor=False, shutdown_event=None):
-        self.room, self.nick, self.server, self.f, self.secret = room, nick, server, f, secret
+    """Compatibility wrapper used by the existing Enchat entry point."""
+
+    def __init__(
+        self,
+        room,
+        nick,
+        server,
+        f,
+        buf,
+        secret,
+        is_public=False,
+        is_tor=False,
+        shutdown_event=None,
+        room_label=None,
+    ):
+        self.room = room
+        self.room_label = room_label or room
+        self.nick = nick
+        self.server = server
+        self.fernet = f
         self.buf = buf
+        self.secret = secret
         self.is_public = is_public
         self.is_tor = is_tor
         self.shutdown_event = shutdown_event or threading.Event()
-        self.layout = Layout()
-        self.layout.split(
-            Layout(name="header", size=3),
-            Layout(name="body", ratio=1),
-            Layout(name="input", size=3),
-        )
-        self.redraw = True
-        self.last_len = len(buf)
-        self.last_input = ""
-        self.last_terminal_size = (0, 0)
-        
-        # Performance optimizations
-        self._measure_console = None
-        self._last_terminal_check = 0
-        self._message_height_cache = {}  # Cache for message height calculations
 
-    def _reaper(self):
-        """A background thread to remove users who have timed out."""
-        while not self.shutdown_event.is_set():
-            time.sleep(constants.PING_INTERVAL)
-            
+    def _reaper(self, stop_evt: threading.Event) -> None:
+        while not stop_evt.wait(constants.PING_INTERVAL):
             now = time.time()
-            # Create a copy of the items to avoid dictionary size changing during iteration
             for user, last_seen in list(state.room_participants.items()):
+                if user == self.nick:
+                    continue
                 if now - last_seen > constants.USER_TIMEOUT:
-                    if user == self.nick: continue # Should not happen, but as a safeguard
-                    
-                    del state.room_participants[user]
-                    self.buf.append(("System", Text.from_markup(f"[dim]{user} left (timed out)[/dim]"), False))
-                    
-                    # Check if the timed-out user was a lottery starter
-                    lottery = state.lottery_state.get(self.room)
-                    if lottery and lottery["starter"] == user:
-                        network.enqueue_sys(self.room, self.nick, "LOTTERY_CANCEL", self.server, self.f)
-                        self.buf.append(("System", Text.from_markup(f"[yellow]The lottery was automatically canceled because the starter, [cyan]{user}[/], left.[/]"), False))
-                    
-                    # Check if the timed-out user was a poll starter
-                    poll = state.poll_state.get(self.room)
-                    if poll and poll["starter"] == user:
-                        network.enqueue_sys(self.room, self.nick, "POLL_CLOSE", self.server, self.f)
-                        self.buf.append(("System", Text.from_markup(f"[yellow]The poll was automatically closed because the starter, [cyan]{user}[/], left.[/]"), False))
-            
-            # Check if room is now empty (only current user left) and auto-cleanup if enabled
-            if not self.is_public and len(state.room_participants) <= 1:
-                # Room is empty or only current user left - initiate cleanup in background
-                threading.Thread(target=self._initiate_auto_cleanup, daemon=True).start()
+                    state.room_participants.pop(user, None)
+                    self.buf.append(
+                        ("System", Text(f"{user} left (timed out)", style="dim"), False)
+                    )
 
-    def _initiate_auto_cleanup(self):
-        """Automatically clean up when room becomes empty."""
-        # Add a delay to avoid cleanup during temporary disconnections
-        time.sleep(constants.AUTO_CLEANUP_DELAY)
-        
-        # Re-check if room is still empty after delay
-        if not self.is_public and len(state.room_participants) <= 1:
-            # Clear local buffer
-            self.buf.clear()
-            
-            # Add auto-cleanup notification
-            cleanup_text = Text.from_markup(
-                "[bold blue]🤖 Auto-cleanup activated[/]\n\n"
-                "The room became empty and chat history has been automatically cleared.\n"
-                "[dim]This helps protect privacy by removing old encrypted messages.[/dim]"
-            )
-            panel = Panel(
-                cleanup_text,
-                title="[bold blue]🧹 Auto-Cleanup[/]",
-                border_style="blue", 
-                padding=(1, 2)
-            )
-            self.buf.append(("System", panel, False))
+    def run(self) -> None:
+        EnchatApp(self).run()
 
-    def _head(self):
-        parts = [
-            (" ENCHAT ", "bold cyan"),
-            (" CONNECTED ", "bold green"),
-            (f" {self.room} ", "white"),
-        ]
-        if self.is_tor:
-            parts.append(("🧅 TOR ", "bold purple"))
-        
-        parts.extend([
-            (f" {self.nick} ", "magenta"),
-            (" | " + self.server.replace("https://", ""), "dim")
-        ])
-        
-        return Panel(Text.assemble(*parts), style="blue")
 
-    def _get_message_height(self, renderable, content_width):
-        """Efficiently calculate message height with caching."""
-        # Create a simple hash key for the renderable
-        if hasattr(renderable, '__str__'):
-            cache_key = (str(renderable), content_width)
-        else:
-            cache_key = (repr(renderable), content_width)
-        
-        if cache_key in self._message_height_cache:
-            return self._message_height_cache[cache_key]
-        
-        # Initialize measure console once and reuse
-        if self._measure_console is None or self._measure_console.size.width != content_width:
-            self._measure_console = RichConsole(width=content_width, file=StringIO())
-        
-        # Clear the StringIO buffer
-        self._measure_console.file.seek(0)
-        self._measure_console.file.truncate(0)
-        
-        self._measure_console.print(renderable)
-        output = self._measure_console.file.getvalue()
-        msg_height = output.count('\n')
-        
-        if msg_height == 0 and output.strip():
-            msg_height = 1
-            
-        # Cache the result, but limit cache size to prevent memory issues
-        if len(self._message_height_cache) > 100:
-            # Keep only the most recent 50 entries
-            keys_to_remove = list(self._message_height_cache.keys())[:-50]
-            for key in keys_to_remove:
-                del self._message_height_cache[key]
-        
-        self._message_height_cache[cache_key] = msg_height
-        return msg_height
+def build_preview_app() -> EnchatApp:
+    """Create a deterministic offline app for visual QA and tests."""
+    from cryptography.fernet import Fernet
 
-    def _body(self):
-        try:
-            terminal_size = shutil.get_terminal_size()
-            # Header=3, Input=3, Panel-Border=2. Net content height.
-            available_height = max(3, terminal_size.lines - 8)
-            content_width = terminal_size.columns - 4
-        except Exception:
-            available_height = 20
-            content_width = 80
-
-        renderables = []
-        current_height = 0
-
-        # Start from the end and work backwards, but limit how far we look
-        # Most terminals show 20-50 lines, so we rarely need to check more than 60 messages
-        start_idx = max(0, len(self.buf) - min(60, available_height * 3))
-        messages_to_check = list(reversed(self.buf[start_idx:]))
-
-        for msg in messages_to_check:
-            sender, content, own = msg[0], msg[1], msg[2]
-            is_mention = msg[3] if len(msg) > 3 else False
-            
-            # Create the specific renderable for the message
-            if sender == "System":
-                if isinstance(content, Panel):
-                    renderable = content
-                else:
-                    system_text = Text("[SYSTEM] ", style="yellow")
-                    if isinstance(content, Text):
-                        system_text.append(content)
-                    else:
-                        system_text.append(Text.from_markup(str(content)))
-                    renderable = system_text
-            else:
-                lab, st = ("You", "green") if own else (sender, "cyan")
-                message_text = Text()
-                if is_mention:
-                    message_text.append(f"{lab}: {content}", style="black on yellow")
-                else:
-                    message_text.append(f"{lab}: ", style=st)
-                    message_text.append(content)
-                renderable = message_text
-            
-            # Use optimized height calculation
-            msg_height = self._get_message_height(renderable, content_width)
-
-            if current_height + msg_height > available_height:
-                break
-            
-            renderables.insert(0, renderable)
-            current_height += msg_height
-                
-        return Panel(Group(*renderables), title=f"Messages ({len(self.buf)})", padding=(0, 1))
-
-    def _inp(self):
-        entered = "".join(state.current_input)
-        txt = Text(f"{self.nick}: ", style="bold green")
-        txt.append(entered or "…", style="white")
-        txt.append(f"  {len(entered)}/{constants.MAX_MSG_LEN}", style="dim")
-        return Panel(Align.left(txt), title="Type message", padding=(0, 1))
-
-    def run(self):
-        stop_evt = threading.Event()
-        threading.Thread(target=network.listener, args=(self.room, self.nick, self.f, self.server, self.buf, stop_evt, self.shutdown_event), daemon=True).start()
-        threading.Thread(target=self._reaper, daemon=True).start()
-        start_char_thread()
-
-        self.buf.append(("System", f"Joined '{self.room}'", False))
-        network.enqueue_sys(self.room, self.nick, "joined", self.server, self.f)
-
-        def pinger():
-            while not stop_evt.is_set() and not self.shutdown_event.is_set():
-                network.enqueue_sys(self.room, self.nick, "ping", self.server, self.f)
-                time.sleep(constants.PING_INTERVAL)
-        threading.Thread(target=pinger, daemon=True).start()
-
-        with Live(self.layout, refresh_per_second=8, screen=False) as live:
-            while not self.shutdown_event.is_set():
-                current_time = time.time()
-                
-                # Check for buffer or input changes
-                if len(self.buf) != self.last_len or "".join(state.current_input) != self.last_input:
-                    self.redraw = True
-                    self.last_len = len(self.buf)
-                    self.last_input = "".join(state.current_input)
-
-                # Only check terminal size every 0.5 seconds to reduce system calls
-                if current_time - self._last_terminal_check > 0.5:
-                    try:
-                        current_size = shutil.get_terminal_size()
-                        if (current_size.lines, current_size.columns) != self.last_terminal_size:
-                            self.last_terminal_size = (current_size.lines, current_size.columns)
-                            self.redraw = True
-                            # Clear height cache when terminal size changes
-                            self._message_height_cache.clear()
-                    except:
-                        pass
-                    self._last_terminal_check = current_time
-
-                if self.redraw:
-                    self.layout["header"].update(self._head())
-                    self.layout["body"].update(self._body())
-                    self.layout["input"].update(self._inp())
-                    live.refresh()
-                    self.redraw = False
-
-                try:
-                    line = state.input_queue.get_nowait()
-                except queue.Empty:
-                    time.sleep(0.05)
-                    continue
-
-                self.redraw = True
-                if not line:
-                    continue
-                
-                # Command handling and message sending are now mutually exclusive.
-                if line.startswith("/"):
-                    res = commands.handle_command(line, self.room, self.nick, self.server, self.f, self.buf, self.secret, self.is_public, self.is_tor)
-                    if res == "exit":
-                        self.shutdown_event.set()
-                        break
-                else:
-                    # This is a regular message
-                    if len(line) > constants.MAX_MSG_LEN:
-                        self.buf.append(("System", "❌ Message too long", False, False))
-                    else:
-                        network.enqueue_msg(self.room, self.nick, line, self.server, self.f)
-                        self.buf.append((self.nick, line, True, False))
-                
-                trim(self.buf)
-
-        # The loop has exited, so we just need to stop the listener thread.
-        # The main script (enchat.py) will handle sending the "left" message.
-        stop_evt.set()
+    now = time.time()
+    state.room_participants.clear()
+    state.room_participants.update({"Maya": now, "Noor": now, "you": now})
+    state.relay_status = "connected"
+    state.relay_error = ""
+    preview = [
+        ("you", "Pushed the fixes for the import flow. Can you pull and give it a try?", True),
+        ("Maya", "On it. I’ll run through a few edge cases and report back.", False),
+        ("Noor", "I added a short note in docs/usage.md about the new flags.", False),
+        ("System", "Maya joined #studio", False),
+        ("Maya", "Looks good overall. One small nit on the error text.", False),
+        ("you", "Sounds like a plan. Appreciate it, team.", True),
+    ]
+    chat = ChatUI(
+        "studio",
+        "you",
+        "https://relay.example",
+        Fernet(Fernet.generate_key()),
+        preview,
+        "preview-only",
+    )
+    return EnchatApp(chat, network_enabled=False)

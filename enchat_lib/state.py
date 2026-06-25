@@ -20,6 +20,10 @@ current_input: List[str] = []
 # Tor status
 tor_ip = None
 
+# Relay connection status, updated by the listener thread.
+relay_status = "connecting"
+relay_error = ""
+
 # In-memory state for lotteries, keyed by room name
 # This is simple and resets if the client restarts.
 lottery_state: Dict[str, dict] = {}

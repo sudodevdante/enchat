@@ -8,7 +8,7 @@
   <b><a href="https://github.com/sudodevdante/enchat">GitHub</a></b>
 </div>
 
-[![Python 3.6+](https://img.shields.io/badge/python-3.6+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
 **Enchat** brings **end-to-end encrypted communication** directly to your terminal, enabling completely private conversations without corporate surveillance or data harvesting. Built on a zero-trust architecture, Enchat ensures that your messages are cryptographically protected and invisible to servers, governments, and eavesdroppers.
 
@@ -16,8 +16,10 @@
 
 ## ✨ Core Features
 - **Real-Time Encrypted Chat:** Secure, real-time messaging with timestamps and user presence indicators.
+- **Keyboard-First Interface:** Responsive terminal layout, editable composer, command suggestions, action palette, and collapsible participant list.
+- **Ephemeral Public Rooms:** Anyone can create a discoverable public room; it remains listed while participants are active and expires automatically afterward.
 - **Secure Room & File Sharing:** Invite users with temporary, zero-knowledge links and share files with end-to-end encryption.
-- **Perfect Forward Secrecy (PFS):** Chat sessions use ephemeral keys, ensuring past conversations remain secure even if a room's passphrase is compromised.
+- **Atomic Encrypted Messages:** Each message carries everything needed for decryption inside one authenticated room-key envelope, avoiding key-synchronization races.
 - **Tor Support:** Enhance your anonymity by routing all traffic through the Tor network.
 - **Zero-Knowledge Architecture:** Servers act as blind message relays and have zero knowledge of your message content, files, or room passphrases.
 - **Cross-Platform:** A consistent and powerful terminal experience on macOS, Linux, and Windows.
@@ -43,13 +45,23 @@ cd enchat
 
 | Command | Description |
 |---|---|
-| `enchat` | Start the interactive setup to create or join a room. |
+| `enchat` | Open the keyboard-first Home screen. |
+| `enchat run` | Immediately reopen the saved room. |
 | `enchat join-link <url>` | Join a room directly using a secure invitation link. |
+| `enchat public [name]` | Join an active public room from the directory. |
 | `enchat reset` | Resets all saved room configurations. |
 | `enchat kill` | Securely wipes all Enchat data from your device. |
 
 ### Creating or Joining a Room
-To start a new chat, simply run `enchat` and follow the on-screen prompts.
+Run `enchat` to open Home. From there you can continue a saved room, create or
+join a private room, paste an invite link, or browse public rooms. Room forms
+support Tab/Enter/Esc navigation, masked passphrases, validation, and an
+optional advanced relay selector.
+
+Public rooms can be created directly from Home. Each room receives a random
+internal relay topic and a temporary directory lease. Every connected client
+renews that lease; roughly two minutes after the last participant leaves, the
+room disappears from discovery.
 
 ```bash
 enchat
@@ -59,11 +71,13 @@ You will be guided through setting a room name, a nickname, and a strong encrypt
 ### Joining with an Invitation Link
 If you've received a secure link, use the `join-link` command:
 ```bash
-enchat join-link "https://share.enchat.io/s/AbCdEfGh#key-material-here"
+enchat join-link "https://share.enchat.io/join#session-id:key-material"
 ```
 
 <div align="center">
-  <img src="https://sudosallie.com/enchat-preview.png" alt="Enchat Interface" width="800">
+  <img src="assets/images/enchat-home.png" alt="Enchat Home screen" width="800">
+  <br><br>
+  <img src="assets/images/enchat-chat.png" alt="Enchat in-chat interface" width="800">
 </div>
 
 ---
@@ -107,9 +121,7 @@ Share documents, images, and other files with the same end-to-end encryption use
 
 ## Enhance your development workflows
 
-Enchat is designed to integrate seamlessly into your development process. Use it to collaborate with colleagues, share code snippets, and transfer files without ever leaving the terminal. The GIF below demonstrates how Enchat can be used in a development environment to communicate with team members and share files securely.
-
-![Enchat Action](https://sudosallie.com/enchat-action.gif)
+Enchat is designed to integrate seamlessly into your development process. Use it to collaborate with colleagues, share code snippets, and transfer files without ever leaving the terminal.
 
 ---
 
@@ -138,26 +150,35 @@ Enchat is designed to integrate seamlessly into your development process. Use it
 | `/poll` | Create a poll for the room. | `/poll "Q?" \| "Opt1" \| "Opt2"` |
 | `/vote` | Cast your vote in an active poll. | `/vote 1` |
 
+### Keyboard shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+K` | Open the action palette. |
+| `Ctrl+M` | Show or hide participants. |
+| `F1` | Open help. |
+| `Ctrl+Q` | Leave the current chat. |
+
 ---
 
 ## 🔒 Security Deep Dive
 
 Enchat is built on a foundation of **defense-in-depth** and **zero-trust** principles.
 
-- **End-to-End Encryption:** `AES-256-GCM` for authenticated encryption of all messages and files.
-- **Key Derivation:** `PBKDF2-HMAC-SHA256` with 100,000 iterations protects your passphrase against brute-force attacks.
-- **Perfect Forward Secrecy (PFS):** Each session uses a unique, ephemeral encryption key. Once a session ends, the key is gone forever, rendering past messages inaccessible even if the main room passphrase is stolen.
-- **Double-Layer Encryption:** Messages are first encrypted with the ephemeral session key, and the result is then encrypted again with the main room key.
-- **Server Blindness:** The `ntfy.sh` server (or your self-hosted instance) acts as a blind message relay. It only ever sees encrypted blobs of data and has no ability to decrypt message content, usernames, timestamps, or file data.
-- **Metadata Protection:** All metadata, including timestamps, usernames, and system events (like joins/leaves), is fully encrypted.
-- **Privacy Cleanup:** The `/clean-chat` command allows users to clear chat history for all participants, and rooms automatically clean up when empty to minimize data retention.
-- **Secure Wipe:** The `enchat kill` command securely wipes all local configuration files, logs, and downloaded content.
+- **End-to-End Encryption:** Fernet authenticated encryption protects message and file contents between room participants.
+- **Key Derivation:** `PBKDF2-HMAC-SHA256` with 480,000 iterations derives the room key from its passphrase.
+- **Atomic Wire Protocol:** Protocol v2 encrypts each complete message directly under the derived room key. Legacy session-key messages remain readable during migration, but new messages no longer depend on a separately delivered key event.
+- **Server Blindness:** The `ntfy` relay cannot decrypt message contents, usernames inside encrypted payloads, or file contents.
+- **Metadata Limits:** The relay can still observe network metadata such as IP addresses, timing, traffic volume, and the room topic used for routing.
+- **Public Room Boundary:** Public-room directory credentials are intentionally available to Enchat clients. Public rooms prevent casual relay inspection but provide no membership secrecy, trusted identity, or protection against a malicious participant.
+- **Privacy Cleanup:** The `/clean-chat` command signals connected participants to clear their local chat view. Encrypted relay data expires according to the relay's retention policy.
+- **Local Cleanup:** The `enchat kill` command performs best-effort removal of local configuration, logs, and downloaded content. Storage hardware and operating systems may retain recoverable copies.
 
 ### Message Flow Security
 ```
-Your Message → [PFS Session Key Encrypt] → [Room Key Encrypt] → Encrypted Blob → ntfy Server → Encrypted Blob → [Room Key Decrypt] → [PFS Session Key Decrypt] → Recipient
+Your Message → [Room Key Encrypt] → Authenticated Blob → ntfy Server → Authenticated Blob → [Room Key Decrypt] → Recipient
 ```
-An attacker would need to compromise **both** the main room passphrase **and** the active, in-memory-only session key to view messages in transit—a near-impossible task.
+Enchat's protocol has not yet received a formal external security audit. Treat its guarantees as implementation claims that still require independent review.
 
 ---
 
@@ -220,4 +241,4 @@ Redistribution, modification, decompilation, or any other use is also prohibited
 
 THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
 
-For commercial use or enterprise licensing, please contact info@enchat.io for pricing and terms. 
+For commercial use or enterprise licensing, please contact info@enchat.io for pricing and terms.

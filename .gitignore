@@ -46,4 +46,10 @@ Thumbs.db
 *.db
 
 # Local configuration
-.enchat.conf 
+.enchat.conf
+
+# Local pre-change snapshots
+backups/
+
+# Local design/test preview output
+artifacts/

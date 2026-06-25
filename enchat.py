@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from getpass import getpass
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from cryptography.fernet import Fernet
 from rich.console import Console
@@ -21,7 +21,8 @@ from rich.align import Align
 
 # Local modules from enchat_lib
 from enchat_lib import (
-    config, constants, crypto, network, secure_wipe, ui, public_rooms, state, link_sharing
+    config, constants, crypto, network, secure_wipe, ui, public_rooms, state, link_sharing,
+    onboarding,
 )
 from enchat_lib.constants import VERSION, KEYRING_AVAILABLE
 
@@ -43,79 +44,111 @@ def _render_header(title: str):
     console.print(panel)
     console.print()
 
-def first_run(args):
-    """Guides the user through the first-time setup with an enhanced UI."""
-    _render_header("First-Time Setup")
-    
-    console.print(Panel(
-        Text.from_markup(
-            "Welcome to [bold cyan]enchat[/]! Let's get you set up."
-        ),
-        title="Welcome",
-        border_style="green",
-        padding=(1, 2)
-    ))
-    
-    action = Prompt.ask(
-        Text.from_markup(
-            "\nWhat would you like to do?\n\n"
-            "   [bold]1)[/] [cyan]Private Room[/] (Create/Join)\n"
-            "   [bold]2)[/] [yellow]Public Room[/] (Join)"
-        ),
-        choices=["1", "2"],
-        show_choices=False,
-        default="1"
+def first_run(args, saved_config=None):
+    """Run the Textual home and onboarding flow."""
+    saved_config = saved_config or (None, None, None, None)
+    saved_room, saved_nick, saved_secret, saved_server = saved_config
+    result = onboarding.run_onboarding(
+        saved_room or "",
+        saved_nick or "",
+        args.server or constants.ENCHAT_NTFY,
     )
-
-    if action == "2":
-        # Pass the original args to ensure the --tor flag is propagated
-        join_public_room(args)
+    if result is None:
         return None, None, None, None
 
-    console.print(Panel(
-        Text.from_markup(
-            "A [bold]Room[/] is a shared chat space.\n"
-            "A [bold]Passphrase[/] is the key to that room. [bold red]Never lose it![/]"
-        ),
-        title="Private Room Setup",
-        border_style="blue",
-        padding=(1, 2)
-    ))
-    
-    room = Prompt.ask("🏠 Room Name")
-    nick = Prompt.ask("👤 Nickname")
-    secret = getpass("🔑 Passphrase (will be hidden)")
-    
-    server_url = getattr(args, 'server', None)
-    if server_url:
-        server = server_url.rstrip('/')
-        console.print(f"🌍 Using custom server: [bold cyan]{server}[/]")
-    else:
-        console.print("📡 Please choose a server:")
-        choice = Prompt.ask(
-            Text.from_markup(
-                "   [bold]1)[/] [green]Enchat Server[/] (Recommended, private)\n"
-                "   [bold]2)[/] [yellow]Public ntfy.sh[/] (Functional, less private)\n"
-                "   [bold]3)[/] [cyan]Custom Server[/]"
-            ),
-            choices=["1", "2", "3"],
-            default="1"
-        )
-        server = constants.ENCHAT_NTFY if choice == "1" else constants.DEFAULT_NTFY if choice == "2" else Prompt.ask("Enter Custom Server URL").rstrip('/')
+    if result.action == "continue":
+        return saved_room, saved_nick, saved_secret, args.server or saved_server
 
-    if Prompt.ask("\n💾 Save these settings for next time?", choices=["y", "n"], default="y") == "y":
-        if KEYRING_AVAILABLE and Prompt.ask("🔐 Save passphrase securely in system keychain?", choices=["y", "n"], default="y") == "y":
+    if result.action == "public":
+        public_room = public_rooms.PublicRoom(
+            room_id=result.public_room_id,
+            name=result.public_room,
+            topic=result.room,
+            secret=result.secret,
+        )
+        start_chat(
+            public_room.topic,
+            result.nick,
+            public_room.secret,
+            args.server or constants.ENCHAT_NTFY,
+            [],
+            is_public=True,
+            is_tor=args.tor,
+            room_label=public_room.name,
+            public_room=public_room,
+        )
+        return None, None, None, None
+
+    if result.action == "invite":
+        parsed = link_sharing.parse_share_url(result.link)
+        if not parsed:
+            console.print("[bold red]Invalid invite link.[/]")
+            return None, None, None, None
+        session_id, key = parsed
+        payload = link_sharing.get_remote_payload(session_id)
+        if not payload:
+            console.print("[bold red]Invite expired, unavailable, or already used.[/]")
+            return None, None, None, None
+        try:
+            room, server, secret = link_sharing.decrypt_credentials(payload, key)
+        except Exception:
+            console.print("[bold red]Could not decrypt the invitation.[/]")
+            return None, None, None, None
+        nick = result.nick
+    elif result.action == "create":
+        room, nick, server = result.room, result.nick, result.server
+        secret = base64.urlsafe_b64encode(os.urandom(32)).decode()
+        console.print(
+            Panel(
+                Text(secret, justify="center", style="bold yellow"),
+                title="Your room key",
+                subtitle="Share this only with people you trust",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
+    else:
+        room, nick, secret, server = (
+            result.room,
+            result.nick,
+            result.secret,
+            result.server,
+        )
+
+    server = args.server or server
+    if result.remember:
+        if KEYRING_AVAILABLE and result.save_secret:
             config.save_passphrase_keychain(room, secret)
         config.save_conf(room, nick, "", server)
-        console.print("[green]Settings saved.[/]")
-        
+        console.print("[green]Room settings saved.[/]")
+
     return room, nick, secret, server
 
-def start_chat(room: str, nick: str, secret: str, server: str, buf: List[Tuple[str, str, bool]], is_public: bool = False, is_tor: bool = False):
+def start_chat(
+    room: str,
+    nick: str,
+    secret: str,
+    server: str,
+    buf: List[Tuple[str, str, bool]],
+    is_public: bool = False,
+    is_tor: bool = False,
+    room_label: Optional[str] = None,
+    public_room: Optional[public_rooms.PublicRoom] = None,
+):
     """Initializes and runs the chat UI."""
     if not secret:
         # Prompt for passphrase if not provided (e.g. on subsequent runs without keychain)
         secret = getpass(f"🔑 Passphrase for room '{room}': ")
+
+    SHUTDOWN_EVENT.clear()
+    resolved_server = network.resolve_server(server)
+    if resolved_server != server.rstrip('/'):
+        console.print(
+            f"[yellow]Configured relay is unavailable; using {resolved_server} instead.[/]"
+        )
+    server = resolved_server
+    state.relay_status = "connecting"
+    state.relay_error = ""
 
     f = Fernet(crypto.gen_key(secret, room))
     
@@ -124,18 +157,37 @@ def start_chat(room: str, nick: str, secret: str, server: str, buf: List[Tuple[s
     outbox_thread = threading.Thread(target=network.outbox_worker, args=(out_stop,), daemon=True)
     outbox_thread.start()
 
+    lease_stop = threading.Event()
+    if public_room is not None:
+        threading.Thread(
+            target=public_rooms.maintain_lease,
+            args=(public_room, server, lease_stop),
+            daemon=True,
+        ).start()
+
     # Pass the main shutdown event and room secret to the UI
-    chat_ui = ui.ChatUI(room, nick, server, f, buf, secret, is_public, is_tor, SHUTDOWN_EVENT)
+    chat_ui = ui.ChatUI(
+        room,
+        nick,
+        server,
+        f,
+        buf,
+        secret,
+        is_public,
+        is_tor,
+        SHUTDOWN_EVENT,
+        room_label=room_label,
+    )
     
     def quit_handler(*_):
         """Signal handler for graceful shutdown."""
         # This will trigger the exit condition in the main loop
         SHUTDOWN_EVENT.set()
 
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, quit_handler)   # Ctrl+C
-    signal.signal(signal.SIGTERM, quit_handler)  # Termination signal
-    if hasattr(signal, 'SIGHUP'):                # Unix only (not available on Windows)
+    # Register signal handlers for Ctrl+C and terminal close
+    signal.signal(signal.SIGINT, quit_handler)
+    signal.signal(signal.SIGTERM, quit_handler)
+    if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, quit_handler)
     
     try:
@@ -147,21 +199,28 @@ def start_chat(room: str, nick: str, secret: str, server: str, buf: List[Tuple[s
         # 1. Enqueue the 'left' message
         network.enqueue_sys(room, nick, "left", server, f)
         
-        # 2. Wait for the outbox to be empty, ensuring the message is sent
-        state.outbox_queue.join()
+        # 2. Give the final presence event a brief chance to leave without
+        # making shutdown hang when the relay is unreachable.
+        network.wait_for_outbox(state.outbox_queue, timeout=3.0)
         
         # 3. Stop all background threads
         out_stop.set()
+        lease_stop.set()
         
         console.print("[bold green]✓ Session closed.[/]")
 
 def join_room(args):
     """Handler for the 'join' command with an enhanced UI."""
+    if args.room and link_sharing.parse_share_url(args.room):
+        args.link_url = args.room
+        join_from_link(args)
+        return
+
     _render_header("Join Room")
     room_name = args.room or Prompt.ask("🏠 Room Name to join")
     display_name = args.name or Prompt.ask("👤 Your Nickname")
     secret = getpass("🔑 Room Passphrase (will be hidden)")
-    server = args.server or constants.DEFAULT_NTFY
+    server = args.server or constants.ENCHAT_NTFY
     
     if Prompt.ask("\n💾 Save these room settings for next time?", choices=["y", "n"], default="n") == 'y':
         if KEYRING_AVAILABLE and Prompt.ask("🔐 Save passphrase securely in system keychain?", choices=["y","n"], default="y")=="y":
@@ -190,7 +249,7 @@ def create_room(args):
     
     if Prompt.ask("\n🤝 Join this room now?", choices=["y", "n"], default="y") == 'y':
         display_name = Prompt.ask("👤 Your Nickname")
-        server = args.server or constants.DEFAULT_NTFY
+        server = args.server or constants.ENCHAT_NTFY
         
         if Prompt.ask("💾 Save these room settings for next time?", choices=["y", "n"], default="n") == 'y':
             if KEYRING_AVAILABLE and Prompt.ask("🔐 Save new room key in system keychain?", choices=["y","n"], default="y") == 'y':
@@ -203,22 +262,37 @@ def create_room(args):
 def join_public_room(args):
     """Handler for the 'public' command."""
     _render_header("Public Rooms")
-    
-    room_alias = getattr(args, 'room_name', None)
-    available_rooms = public_rooms.PUBLIC_ROOMS.keys()
-    
-    if not room_alias:
-        room_alias = Prompt.ask("Which public room would you like to join?", choices=list(available_rooms))
 
-    if room_alias not in public_rooms.PUBLIC_ROOMS:
-        console.print(f"[bold red]Error: Public room '{room_alias}' not found.[/]")
-        console.print(f"Available public rooms are: [cyan]{', '.join(available_rooms)}[/]")
+    server = args.server or constants.ENCHAT_NTFY
+    try:
+        rooms = public_rooms.list_active_rooms(server)
+    except public_rooms.DirectoryUnavailable:
+        console.print("[red]The public-room directory is currently unreachable.[/]")
+        return
+    room_alias = getattr(args, 'room_name', None)
+
+    if not rooms:
+        console.print("[yellow]No active public rooms. Run [bold]enchat[/] to create one.[/]")
         return
 
-    room_name, secret = public_rooms.PUBLIC_ROOMS[room_alias]
-    server = constants.ENCHAT_NTFY # Public rooms are on the default Enchat server
-    
-    console.print(Text.from_markup(f"Joining public room: [bold cyan]{room_alias}[/].\n"), justify="center")
+    if not room_alias:
+        room_alias = Prompt.ask(
+            "Which public room would you like to join?",
+            choices=[room.name for room in rooms],
+        )
+
+    public_room = public_rooms.find_room(rooms, room_alias)
+    if public_room is None:
+        console.print(f"[bold red]Error: Public room '{room_alias}' not found.[/]")
+        console.print(
+            f"Available public rooms are: [cyan]{', '.join(room.name for room in rooms)}[/]"
+        )
+        return
+
+    console.print(
+        Text.from_markup(f"Joining public room: [bold cyan]{public_room.name}[/].\n"),
+        justify="center",
+    )
     console.print(Panel(
         Text.from_markup(
             "[bold yellow]Welcome![/] Public rooms are encrypted, but the passphrase is public knowledge.\n"
@@ -231,8 +305,18 @@ def join_public_room(args):
 
     display_name = Prompt.ask("👤 Your Nickname")
     
-    console.print(f"\n[green]Connecting to '{room_alias}' as '{display_name}'...[/]")
-    start_chat(room_name, display_name, secret, server, [], is_public=True, is_tor=args.tor)
+    console.print(f"\n[green]Connecting to '{public_room.name}' as '{display_name}'...[/]")
+    start_chat(
+        public_room.topic,
+        display_name,
+        public_room.secret,
+        server,
+        [],
+        is_public=True,
+        is_tor=args.tor,
+        room_label=public_room.name,
+        public_room=public_room,
+    )
 
 def join_from_link(args):
     """Handler for joining a room from a one-time-use link."""
@@ -267,6 +351,7 @@ def join_from_link(args):
 
 def main():
     """Main entry point: parses arguments and starts the correct action."""
+    implicit_start = len(sys.argv) == 1
     parser = argparse.ArgumentParser(
         description="enchat – encrypted terminal chat.",
         formatter_class=argparse.RawTextHelpFormatter
@@ -295,8 +380,7 @@ def main():
         'room_name', 
         nargs='?',
         default=None,
-        choices=list(public_rooms.PUBLIC_ROOMS.keys()) + [None],
-        help='Name of the public room to join. If omitted, a list will be shown.'
+        help='Name or ID of an active public room. If omitted, a list will be shown.'
     )
 
     # Join from link command
@@ -329,6 +413,9 @@ def main():
         else:
             console.print("[green]Cancelled.[/]")
         return
+
+    if args.tor:
+        network.configure_tor()
         
     if args.command == 'join':
         join_room(args)
@@ -347,16 +434,13 @@ def main():
         return
 
     # Default action: run with config or do first-time setup
-    if args.tor:
-        network.configure_tor()
-
     room, nick, secret, server_conf = config.load_conf()
     server = args.server or server_conf
     
-    if not all((room, nick, server)) or args.command != 'run':
-        # If 'run' is specified but no config, it's a first run.
-        # Or if any other command was called that needs setup.
-        room, nick, secret, server = first_run(args)
+    if implicit_start or not all((room, nick, server)):
+        room, nick, secret, server = first_run(
+            args, (room, nick, secret, server)
+        )
 
     if room and nick and server:
         start_chat(room, nick, secret, server, [], is_tor=args.tor)

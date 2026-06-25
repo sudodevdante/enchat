@@ -66,9 +66,9 @@ def wipe_keychain_entries():
     return len(warnings) == 0, warnings
 
 def save_conf(room: str, nick: str, secret: str, server: str):
-    """Saves the configuration to a file."""
+    """Save non-sensitive settings; passphrases belong in the system keychain."""
     with open(CONF_FILE, "w", encoding="utf-8") as f:
-        f.write(f"{room}\n{nick}\n{secret}\n{server}\n")
+        f.write(f"{room}\n{nick}\n\n{server}\n")
     try:
         os.chmod(CONF_FILE, 0o600)
     except Exception:

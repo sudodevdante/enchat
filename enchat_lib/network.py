@@ -14,6 +14,65 @@ from .utils import trim
 
 console = Console()
 session = requests.Session()
+WIRE_V2_PREFIX = "V2|"
+
+
+def resolve_server(server):
+    """Migrate the retired Enchat relay to the currently supported default."""
+    normalized = (server or constants.DEFAULT_NTFY).rstrip('/')
+    if normalized == constants.LEGACY_ENCHAT_NTFY:
+        return constants.ENCHAT_NTFY
+    return normalized
+
+
+def parse_subscription_event(raw):
+    """Return ``(event_id, message)`` for an ntfy JSON message event."""
+    try:
+        event = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if event.get("event") != "message" or not isinstance(event.get("message"), str):
+        return None
+    return str(event.get("id", "")), event["message"]
+
+
+def subscription_url(server, room, last_event_id=None):
+    """Build a live subscription URL without replaying a previous session."""
+    base = f"{server.rstrip('/')}/{room}/json"
+    return f"{base}?since={last_event_id}" if last_event_id else base
+
+
+def encode_wire_message(nick, content, f, timestamp=None):
+    """Create one atomic v2 envelope encrypted with the shared room key."""
+    ts = int(time.time()) if timestamp is None else int(timestamp)
+    plaintext = f"{WIRE_V2_PREFIX}{ts}|{nick}|{content}"
+    return crypto.encrypt(plaintext, f)
+
+
+def decode_wire_message(token, f, room):
+    """Decode v2 envelopes and retain read compatibility with legacy messages."""
+    plain = crypto.decrypt(token, f)
+    if not plain:
+        return None
+
+    if plain.startswith(WIRE_V2_PREFIX):
+        message = plain[len(WIRE_V2_PREFIX):]
+    else:
+        # Legacy protocol: the room-key envelope contains a second token whose
+        # key arrived in a separate SESSIONKEY event.
+        legacy_key = session_key.get_session_key(room)
+        if not legacy_key:
+            return None
+        message = session_key.decrypt_with_session(plain, legacy_key)
+        if not message:
+            return None
+
+    try:
+        ts, sender, content = message.split("|", 2)
+        int(ts)
+    except (TypeError, ValueError):
+        return None
+    return ts, sender, content
 
 def configure_tor():
     """Configures the application to use Tor SOCKS proxy."""
@@ -69,29 +128,6 @@ def outbox_worker(stop_evt: threading.Event):
             continue
         
         try:
-            # --- Key Rotation Check (for all message types) ---
-            if session_key.should_rotate_key(room):
-                new_key = session_key.generate_session_key()
-                session_key.set_session_key(room, new_key)
-                encrypted_key = session_key.encrypt_session_key(new_key, f)
-                body = f"SESSIONKEY:{encrypted_key}"
-                try:
-                    session.post(f"{server}/{room}", data=body, timeout=15)
-                except Exception:
-                    pass
-
-            current_key = session_key.get_session_key(room)
-            if not current_key:
-                # This can happen on first message, so we generate a key.
-                current_key = session_key.generate_session_key()
-                session_key.set_session_key(room, current_key)
-                encrypted_key = session_key.encrypt_session_key(current_key, f)
-                body = f"SESSIONKEY:{encrypted_key}"
-                try:
-                    session.post(f"{server}/{room}", data=body, timeout=15)
-                except Exception:
-                    pass
-            
             # --- Message Sending Logic ---
             if kind == "FILE_TRANSFER":
                 # Special handler for atomic file transfers
@@ -100,19 +136,13 @@ def outbox_worker(stop_evt: threading.Event):
                 
                 # 1. Send metadata
                 meta_json = json.dumps(metadata)
-                ts = int(time.time())
-                msg_to_encrypt = f'{ts}|{nick}|{meta_json}'
-                session_encrypted = session_key.encrypt_with_session(msg_to_encrypt, current_key)
-                body = f"FILEMETA:{crypto.encrypt(session_encrypted, f)}"
+                body = f"FILEMETA:{encode_wire_message(nick, meta_json, f)}"
                 _send_with_retry(server, room, body, "file metadata", stop_evt)
                 
                 # 2. Send all chunks using the same key
                 for chunk in chunks:
                     chunk_json = json.dumps(chunk)
-                    ts = int(time.time())
-                    msg_to_encrypt = f'{ts}|{nick}|{chunk_json}'
-                    session_encrypted = session_key.encrypt_with_session(msg_to_encrypt, current_key)
-                    body = f"FILECHUNK:{crypto.encrypt(session_encrypted, f)}"
+                    body = f"FILECHUNK:{encode_wire_message(nick, chunk_json, f)}"
                     # We don't retry chunks aggressively to avoid holding up the queue
                     try:
                         session.post(f"{server}/{room}", data=body, timeout=15)
@@ -121,11 +151,8 @@ def outbox_worker(stop_evt: threading.Event):
                 continue
 
             elif kind in ["MSG", "SYS"]:
-                ts = int(time.time())
                 content = f"SYSTEM:{payload}" if kind == "SYS" else payload
-                msg_to_encrypt = f'{ts}|{nick}|{content}'
-                session_encrypted = session_key.encrypt_with_session(msg_to_encrypt, current_key)
-                body = f"{kind}:{crypto.encrypt(session_encrypted, f)}"
+                body = f"{kind}:{encode_wire_message(nick, content, f)}"
                 _send_with_retry(server, room, body, kind.lower(), stop_evt)
 
             else:
@@ -133,6 +160,18 @@ def outbox_worker(stop_evt: threading.Event):
 
         finally:
             state.outbox_queue.task_done()
+
+
+def wait_for_outbox(outbox: queue.Queue, timeout: float) -> bool:
+    """Wait for queued work with a deadline; unlike Queue.join, never hangs."""
+    deadline = time.monotonic() + timeout
+    with outbox.all_tasks_done:
+        while outbox.unfinished_tasks:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            outbox.all_tasks_done.wait(remaining)
+    return True
 
 def _send_with_retry(server, room, body, kind_str, stop_evt):
     """Helper to send a message with a retry mechanism."""
@@ -147,28 +186,41 @@ def _send_with_retry(server, room, body, kind_str, stop_evt):
         except Exception:
             delay = min(delay * 2, 30)
         retry += 1
-        time.sleep(delay)
+        if stop_evt.wait(delay):
+            break
 
     if retry >= 6:
         console.log(f"[red]✗ could not deliver {kind_str} after retries[/]")
 
 def listener(room, nick, f, server, buf, stop_evt: threading.Event, shutdown_event: threading.Event):
-    """Worker thread for listening to SSE events."""
-    url = f"{server}/{room}/raw?x-sse=true&since=-30m&poll=65"
-    headers = {"Accept": "text/event-stream", "Cache-Control": "no-cache"}
+    """Worker thread for listening to ntfy's newline-delimited JSON stream."""
+    headers = {"Accept": "application/x-ndjson", "Cache-Control": "no-cache"}
     seen: set[str] = set()
+    last_event_id = None
     
     # Add self to the participant list with current time
     state.room_participants[nick] = time.time()
     
     while not stop_evt.is_set() and not shutdown_event.is_set():
         try:
-            with session.get(url, stream=True, timeout=(5, None), headers=headers) as resp:
+            state.relay_status = "connecting"
+            url = subscription_url(server, room, last_event_id)
+            with session.get(url, stream=True, timeout=(5, 90), headers=headers) as resp:
+                resp.raise_for_status()
+                state.relay_status = "connected"
+                state.relay_error = ""
                 for raw in resp.iter_lines(decode_unicode=True, chunk_size=1):
                     if stop_evt.is_set() or shutdown_event.is_set(): return
                     if not raw: continue
 
-                    h = hashlib.sha256(raw.encode()).hexdigest()
+                    parsed_event = parse_subscription_event(raw)
+                    if not parsed_event:
+                        continue
+                    event_id, raw = parsed_event
+                    if event_id:
+                        last_event_id = event_id
+
+                    h = event_id or hashlib.sha256(raw.encode()).hexdigest()
                     if h in seen: continue
                     seen.add(h)
                     if len(seen) > constants.MAX_SEEN:
@@ -187,16 +239,10 @@ def listener(room, nick, f, server, buf, stop_evt: threading.Event, shutdown_eve
                     if raw_type not in ["SYS", "MSG", "FILEMETA", "FILECHUNK"]:
                         continue
 
-                    plain = crypto.decrypt(raw_content, f)
-                    if not plain: continue
-
-                    current_key = session_key.get_session_key(room)
-                    if not current_key: continue
-
-                    msg = session_key.decrypt_with_session(plain, current_key)
-                    if not msg: continue
-
-                    ts, sender, content = msg.split("|", 2)
+                    decoded = decode_wire_message(raw_content, f, room)
+                    if not decoded:
+                        continue
+                    ts, sender, content = decoded
                     
                     # Allow own SYS messages to be processed to update local state (e.g., for lottery)
                     # but ignore own MSG, FILEMETA, etc., which are handled locally.
@@ -363,6 +409,8 @@ def listener(room, nick, f, server, buf, stop_evt: threading.Event, shutdown_eve
                     
                     trim(buf)
         except Exception as e:
+            state.relay_status = "offline"
+            state.relay_error = str(e)
             # In Tor mode, proxy errors are common if the circuit drops.
             # We want to reconnect silently without logging a scary error.
             if "proxy" not in str(e).lower():

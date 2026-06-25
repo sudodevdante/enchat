@@ -2,6 +2,8 @@
 Handles the creation and consumption of temporary, one-time-use links for sharing room credentials.
 """
 
+from __future__ import annotations
+
 import os
 import base64
 from cryptography.fernet import Fernet
@@ -114,4 +116,4 @@ def decrypt_credentials(encrypted_payload: str, ephemeral_key: str) -> tuple[str
     # Split back into the three components
     room_name, server_url, room_secret = decrypted_str.split('|', 2)
     
-    return room_name, server_url, room_secret 
+    return room_name, server_url, room_secret

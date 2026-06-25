@@ -10,7 +10,7 @@ from rich.text import Text
 from rich.panel import Panel
 from rich.markup import escape
 
-from . import state, constants, session_key, file_transfer, link_sharing
+from . import state, constants, file_transfer, link_sharing
 from .utils import trim
 from .network import enqueue_msg, enqueue_sys
 from .clipboard import copy_to_clipboard
@@ -100,7 +100,7 @@ def handle_command(line: str, room: str, nick: str, server: str, f, buf: list, s
             "enchat create": "Create a new private room.",
             "enchat join <room>": "Join a private room.",
             "enchat public <room>": "Join a public room (e.g., lobby).",
-            "enchat --reset": "Reset your local configuration."
+            "enchat reset": "Reset your local configuration."
         }
         buf.append(("System", "[bold]=== In-Chat Commands ===[/]", False))
         for c, d in help_text.items():
@@ -291,21 +291,10 @@ def handle_command(line: str, room: str, nick: str, server: str, f, buf: list, s
         
         # --- Encryption Core ---
         buf.append(("System", Text.from_markup(u"  [bold cyan]├─ Encryption Core[/]"), False))
-        buf.append(("System", Text.from_markup(u"  │  • Base Encryption: [green]AES-256-GCM (Fernet)[/green]"), False))
-        buf.append(("System", Text.from_markup(u"  │  • Key Derivation:  [green]PBKDF2-SHA256 (100k rounds)[/green]"), False))
-
-        # --- Forward Secrecy ---
-        buf.append(("System", Text.from_markup(u"  [bold cyan]├─ Forward Secrecy (PFS)[/]"), False))
-        current_key = session_key.get_session_key(room)
-        if current_key:
-            key_age = int(time.time() - session_key._active_sessions[room][1])
-            rotation_in = max(0, session_key.SESSION_KEY_ROTATION_INTERVAL - key_age)
-            pfs_status = Text.from_markup(f"  │  • Status:          [bold green]Active[/] (new key in ~{rotation_in}s)")
-            buf.append(("System", pfs_status, False))
-        else:
-            pfs_status = Text.from_markup(u"  │  • Status:          [bold red]Inactive[/] (no session key yet)")
-            buf.append(("System", pfs_status, False))
-        buf.append(("System", Text.from_markup(u"  │  • Session Key:     [green]Ephemeral, memory-only[/green]"), False))
+        buf.append(("System", Text.from_markup(u"  │  • Encryption:      [green]Fernet authenticated encryption[/green]"), False))
+        buf.append(("System", Text.from_markup(u"  │  • Key Derivation:  [green]PBKDF2-SHA256 (480k rounds)[/green]"), False))
+        buf.append(("System", Text.from_markup(u"  │  • Wire Protocol:   [green]Atomic room-key envelope (v2)[/green]"), False))
+        buf.append(("System", Text.from_markup(u"  │  • External Audit:  [yellow]Pending[/yellow]"), False))
 
         # --- Data Privacy & System ---
         buf.append(("System", Text.from_markup(u"  [bold cyan]└─ Data & System[/]"), False))
