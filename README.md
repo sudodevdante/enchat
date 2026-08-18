@@ -1,7 +1,3 @@
-<div align="center">
-  <img src="https://sudosallie.com/enchat-logo-v3.png" alt="Enchat Logo" width="400">
-</div>
-
 # 🔐 Enchat - Encrypted Under The Radar Terminal Chat
 <div align="center">
   <b><a href="https://enchat.io">Website</a></b> •
