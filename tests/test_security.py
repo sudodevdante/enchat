@@ -5,13 +5,26 @@ from unittest.mock import patch
 
 from cryptography.fernet import Fernet
 
-from enchat_lib import config, file_transfer, notifications, state
+from enchat_lib import clipboard, config, file_transfer, notifications, state
 
 
 class SecurityRegressionTests(unittest.TestCase):
     def setUp(self):
         state.available_files.clear()
         state.file_chunks.clear()
+
+    def test_clipboard_returns_false_without_pyperclip_installed(self):
+        # Regression: when pyperclip is missing, the import fails and the
+        # except clause referenced PyperclipException, raising a NameError
+        # that crashed the /copy-link command.
+        import builtins
+        real_import = builtins.__import__
+        def fake_import(name, *args, **kwargs):
+            if name == "pyperclip":
+                raise ImportError("No module named 'pyperclip'")
+            return real_import(name, *args, **kwargs)
+        with patch("builtins.__import__", side_effect=fake_import):
+            self.assertFalse(clipboard.copy_to_clipboard("secret"))
 
     def test_config_never_writes_plaintext_passphrase(self):
         with tempfile.TemporaryDirectory() as directory:
